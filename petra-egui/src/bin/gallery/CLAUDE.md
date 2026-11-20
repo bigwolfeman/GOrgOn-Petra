@@ -12,6 +12,9 @@ PETRA_SHOT_DIR=/tmp/shots cargo test -p gorgon-petra-egui --bin gallery \
     every_built_page_rasterizes_to_more_than_one_colour
 ```
 
+Add `PETRA_GALLERY_THEME=white|g10|g90|g100` to photograph another theme; every
+`shots.rs` camera honours it.
+
 It rasterizes all 42 pages through a real `wgpu` device (headless, no window)
 and writes a PNG each. Read the PNGs. The assertion itself is deliberately weak
 — more than one distinct colour, which catches a blank page and nothing else —

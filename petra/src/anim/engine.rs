@@ -57,6 +57,13 @@ use super::value::{AnimVector, PropertyKind};
 const FRAME_DT: f64 = 1.0 / 60.0;
 const IDLE_GAP: f64 = 0.04;
 
+/// How far, in a property's own units, a carried value may sit from its new
+/// target and still count as already there. A child laid out at
+/// `parent + offset` in `f32` does not move by exactly its parent's delta;
+/// the difference is rounding, far under a device pixel, and starting a
+/// trajectory over it would report motion for a frame that has none.
+const CARRY_SLACK: f64 = 1e-3;
+
 /// The clock a new or retargeted trajectory starts from.
 ///
 /// Vsync-spaced frames keep `last` so local time matches wall time.
@@ -226,6 +233,31 @@ impl TrackState {
         self.value
     }
 
+    /// Move the whole trajectory by `delta` without changing its shape.
+    ///
+    /// The frame this track lives in moved under it: an ancestor's layout
+    /// travel, or for a press response the node's own. Origin, state and
+    /// target all shift, so the motion relative to that frame goes on as if
+    /// nothing happened, and a settled track stays settled at its new place.
+    /// A looping keyframe track carries absolute values and is not shifted.
+    fn carry(&mut self, delta: AnimVector) {
+        if self.looping || delta == AnimVector::zeros(delta.len()) {
+            return;
+        }
+        self.origin = self.origin + delta;
+        self.value = self.value + delta;
+        self.target = self.target + delta;
+    }
+
+    /// Take `target` as this track's target without starting a new
+    /// trajectory: it differs from the current one by float noise only.
+    fn adopt(&mut self, target: AnimVector) {
+        self.target = target;
+        if self.settled {
+            self.value = target;
+        }
+    }
+
     /// Aim at a new target from wherever this trajectory is right now.
     ///
     /// `contracts/animation.md`, the interruption rule: *"evaluate the CURRENT
@@ -274,6 +306,51 @@ struct ExitItem {
 struct RawTarget {
     rect: Rect,
     opacity: f32,
+    /// The parent's laid-out origin, `(0, 0)` for the root. The difference
+    /// between two frames' values is the travel an ancestor carried this
+    /// node through, which is not this node's own motion.
+    parent_origin: [f32; 2],
+}
+
+impl RawTarget {
+    /// How far the frame `property` is measured in moved between `before`
+    /// and `self`.
+    ///
+    /// A position lives in its parent's frame, so a reflow or a scroll that
+    /// moves an ancestor moves the node's trajectory with it and starts
+    /// nothing. A press response animates the press and nothing else, so
+    /// for one the node's own laid-out position and size are the frame:
+    /// layout travel lands at once, with the rest of the page.
+    fn frame_travel(self, before: Self, property: PropertyKind, press: bool) -> AnimVector {
+        // In `f64`: the difference of two `f32` values is exact there, so
+        // `before + travel` lands on the new value to the bit.
+        let pair = |(x1, y1): (f32, f32), (x0, y0): (f32, f32)| {
+            AnimVector::new(
+                [
+                    f64::from(x1) - f64::from(x0),
+                    f64::from(y1) - f64::from(y0),
+                    0.0,
+                    0.0,
+                ],
+                2,
+            )
+        };
+        match property {
+            PropertyKind::Position if press => {
+                pair((self.rect.x, self.rect.y), (before.rect.x, before.rect.y))
+            }
+            PropertyKind::Position => pair(
+                (self.parent_origin[0], self.parent_origin[1]),
+                (before.parent_origin[0], before.parent_origin[1]),
+            ),
+            PropertyKind::Size if press => {
+                pair((self.rect.w, self.rect.h), (before.rect.w, before.rect.h))
+            }
+            PropertyKind::Size => AnimVector::zeros(2),
+            PropertyKind::Opacity => AnimVector::scalar(0.0),
+            PropertyKind::Color => unreachable!("DRIVEN_PROPERTIES excludes Color"),
+        }
+    }
 }
 
 /// Drives every declared transition in an application.
@@ -424,11 +501,15 @@ impl TransitionEngine {
             .placements
             .iter()
             .map(|p| {
+                let parent_origin = p.parent.map_or([0.0, 0.0], |i| {
+                    [frame.placements[i].rect.x, frame.placements[i].rect.y]
+                });
                 (
                     p.id.clone(),
                     RawTarget {
                         rect: p.rect,
                         opacity: p.opacity,
+                        parent_origin,
                     },
                 )
             })
@@ -461,8 +542,15 @@ impl TransitionEngine {
         activity
     }
 
-    /// Start, retarget and advance every declared node's tracks. Answers
-    /// whether any placement was rewritten.
+    /// Start, retarget and advance every declared node's tracks, and carry
+    /// each moved box's subtree with it. Answers whether any placement was
+    /// rewritten.
+    ///
+    /// One pre-order walk. A placement's descendants were laid out relative
+    /// to it, so whatever translation its own motion puts on it is handed to
+    /// every descendant, on top of what its ancestors handed it. Without the
+    /// carry a sliding box painted at its trajectory while the text inside it
+    /// painted at its target: one frame, two layouts.
     fn start_and_advance(
         &mut self,
         frame: &mut PetrifiedFrame,
@@ -476,56 +564,133 @@ impl TransitionEngine {
         let live: BTreeSet<&str> = raw.keys().map(String::as_str).collect();
         self.nodes.retain(|id, _| live.contains(id.as_str()));
 
-        for index in 0..frame.placements.len() {
-            let id = frame.placements[index].id.clone();
-            let Some(name) = declarations.get(&id) else {
-                continue;
-            };
-            let Some(def) = self.registry.get(name) else {
-                self.unresolved.insert(id, name.to_owned());
-                continue;
-            };
-            let def = def.clone();
-            let created = !previous.contains_key(&id);
-            for property in DRIVEN_PROPERTIES {
-                if def.timing(property).is_none() {
-                    continue;
-                }
-                changed |= self.advance_property(
-                    frame,
-                    index,
-                    &id,
-                    &def,
-                    property,
-                    created,
-                    previous,
-                    now,
-                    previous_now,
-                );
+        let count = frame.placements.len();
+        // The translation each placement hands its subtree, and its clip
+        // before and after this walk, so a carried child can tell a clip it
+        // inherited from one its own ancestors below the mover set.
+        let mut carry = vec![[0.0_f32; 2]; count];
+        let laid_clip: Vec<Rect> = frame.placements.iter().map(|p| p.clip).collect();
+
+        for index in 0..count {
+            let parent = frame.placements[index].parent;
+            let inherited = parent.map_or([0.0, 0.0], |p| carry[p]);
+            let own =
+                self.advance_node(frame, index, declarations, previous, raw, now, previous_now);
+            changed |= own.is_some();
+            let own = own.unwrap_or([0.0, 0.0]);
+            if inherited != [0.0, 0.0] {
+                let parent = parent.expect("only a child inherits a carry");
+                let placement = &mut frame.placements[index];
+                placement.rect = placement.rect.translate(inherited[0], inherited[1]);
+                // A clip this node shares with its parent is the parent's
+                // clip, wherever that is now. A narrower one was set at or
+                // below the mover and travels with it, still bounded by the
+                // parent's.
+                let parent_clip = frame.placements[parent].clip;
+                frame.placements[index].clip = if laid_clip[index] == laid_clip[parent] {
+                    parent_clip
+                } else {
+                    laid_clip[index]
+                        .translate(inherited[0], inherited[1])
+                        .intersect(parent_clip)
+                };
+                changed = true;
             }
+            carry[index] = [inherited[0] + own[0], inherited[1] + own[1]];
         }
         changed
     }
 
+    /// Advance the tracks of the placement at `index`, if it declares a
+    /// transition, and write their values onto it.
+    ///
+    /// `None` when nothing was written. Otherwise the translation its
+    /// subtree rides on: the distance the box's position moved off its
+    /// laid-out value, except for a press response, which scales the box in
+    /// place about its centre and so carries nothing.
     #[allow(clippy::too_many_arguments)]
-    fn advance_property(
+    fn advance_node(
         &mut self,
         frame: &mut PetrifiedFrame,
         index: usize,
+        declarations: &Declarations,
+        previous: &BTreeMap<String, RawTarget>,
+        raw: &BTreeMap<String, RawTarget>,
+        now: f64,
+        previous_now: f64,
+    ) -> Option<[f32; 2]> {
+        let id = frame.placements[index].id.as_str();
+        let name = declarations.get(id)?;
+        let Some(def) = self.registry.get(name) else {
+            self.unresolved.insert(id.to_owned(), name.to_owned());
+            return None;
+        };
+        let def = def.clone();
+        let id = id.to_owned();
+        let press = def.press_inset() > 0.0;
+        let now_raw = raw[&id];
+        let before = previous.get(&id).copied();
+        let mut wrote = false;
+        let mut own = [0.0_f32; 2];
+        for property in DRIVEN_PROPERTIES {
+            if def.timing(property).is_none() {
+                continue;
+            }
+            let laid = read_property(&frame.placements[index], property);
+            let target = press_target(&def, &frame.placements[index], property, laid);
+            let travel = before.map(|b| now_raw.frame_travel(b, property, press));
+            let Some(value) = self.advance_property(
+                &id,
+                &def,
+                property,
+                laid,
+                target,
+                before.map(|b| read_raw(b, property)),
+                travel,
+                now,
+                previous_now,
+            ) else {
+                continue;
+            };
+            if property == PropertyKind::Position && !press {
+                own = [
+                    (value.get(0) - laid.get(0)) as f32,
+                    (value.get(1) - laid.get(1)) as f32,
+                ];
+            }
+            write_property(&mut frame.placements[index], property, value);
+            wrote = true;
+        }
+        wrote.then_some(own)
+    }
+
+    /// Advance one property's track toward `target` and answer the value to
+    /// write, or `None` when it is exactly the laid-out value.
+    ///
+    /// `before` is the property's raw value on the previous frame, absent for
+    /// a node that was just created. `travel` is how far the frame the
+    /// property is measured in moved since then
+    /// ([`RawTarget::frame_travel`]); a running track is carried by it, and
+    /// a node that only travelled with its frame starts nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn advance_property(
+        &mut self,
         id: &str,
         def: &TransitionDef,
         property: PropertyKind,
-        created: bool,
-        previous: &BTreeMap<String, RawTarget>,
+        laid: AnimVector,
+        target: AnimVector,
+        before: Option<AnimVector>,
+        travel: Option<AnimVector>,
         now: f64,
         previous_now: f64,
-    ) -> bool {
-        // What layout put on the placement, and what this node is actually
-        // heading for. The two differ only for a **pressed** node whose
-        // definition declares a press response; everywhere else `target`
-        // *is* the laid-out value and this pair collapses to what it was.
-        let laid = read_property(&frame.placements[index], property);
-        let target = press_target(def, &frame.placements[index], property, laid);
+    ) -> Option<AnimVector> {
+        // `laid` is what layout put on the placement; `target` is what this
+        // node is actually heading for. The two differ only for a **pressed**
+        // node whose definition declares a press response; everywhere else
+        // `target` *is* the laid-out value and this pair collapses to what
+        // it was.
+        //
         // Reduced motion: the end state is identical and it is reached now.
         // Any trajectory already running for this property was completed by
         // `set_reduced_motion`, so there is nothing here to stop.
@@ -540,11 +705,7 @@ impl TransitionEngine {
             if let Some(tracks) = self.nodes.get_mut(id) {
                 tracks.remove(&property);
             }
-            if target == laid {
-                return false;
-            }
-            write_property(&mut frame.placements[index], property, target);
-            return true;
+            return (target != laid).then_some(target);
         }
         let timing = def
             .timing(property)
@@ -554,7 +715,14 @@ impl TransitionEngine {
         let tracks = self.nodes.entry(id.to_owned()).or_default();
         match tracks.get_mut(&property) {
             Some(track) => {
-                if track.target != target {
+                if let Some(travel) = travel {
+                    track.carry(travel);
+                }
+                if track.target.chebyshev(target) <= CARRY_SLACK {
+                    // Carried onto its new target up to float noise: adopt
+                    // the exact value so a settled track writes nothing.
+                    track.adopt(target);
+                } else {
                     track.retarget(target, now);
                 }
             }
@@ -577,25 +745,25 @@ impl TransitionEngine {
                 // laid-out value rather than interpolating toward it, so the
                 // origin only decides where the property sits if the track
                 // ends, and a looped one does not.
+                let created = before.is_none();
                 let origin = if def.is_ambient() {
                     match def.enter() {
                         Some(track) if created && track.property == property => track.value,
                         _ => target,
                     }
-                } else if created {
-                    match def.enter() {
-                        Some(track) if track.property == property => track.value,
-                        _ => return false,
-                    }
-                } else {
-                    let Some(before) = previous.get(id) else {
-                        return false;
-                    };
-                    let was = read_raw(*before, property);
-                    if was == target {
-                        return false;
+                } else if let Some(before) = before {
+                    // Where the node was, carried with its frame: a node that
+                    // only travelled with an ancestor is already there.
+                    let was = before + travel.unwrap_or_else(|| AnimVector::zeros(before.len()));
+                    if was.chebyshev(target) <= CARRY_SLACK {
+                        return None;
                     }
                     was
+                } else {
+                    match def.enter() {
+                        Some(track) if track.property == property => track.value,
+                        _ => return None,
+                    }
                 };
                 let clock = motion_clock(previous_now, now);
                 tracks.insert(
@@ -634,10 +802,9 @@ impl TransitionEngine {
             // the target instead would settle the crunch and then paint the
             // resting rect, which is a button that flinches once and pops
             // back while the finger is still on it.
-            return false;
+            return None;
         }
-        write_property(&mut frame.placements[index], property, value);
-        true
+        Some(value)
     }
 
     /// Turn nodes that left the tree into exit groups. Answers whether any
@@ -1565,6 +1732,110 @@ mod tests {
         assert_eq!(
             engine.unresolved().get("/app/t").map(String::as_str),
             Some("nope")
+        );
+    }
+
+    /// The rect of `id` in `frame`.
+    fn rect_of(frame: &crate::frame::PetrifiedFrame, id: &str) -> crate::geom::Rect {
+        frame
+            .placement(id)
+            .unwrap_or_else(|| panic!("{id} is placed"))
+            .rect
+    }
+
+    /// **A sliding box carries its subtree.** Mid-flight, a child sits where
+    /// layout put it relative to its parent, so a fill and the text inside it
+    /// can never paint from two different layouts.
+    ///
+    /// Falsify by dropping the carry in `start_and_advance`: the label stays
+    /// at its target while its container is still behind it.
+    #[test]
+    fn a_sliding_box_carries_its_subtree() {
+        let mut engine = TransitionEngine::new(slide_registry());
+        let before = fixtures::carrier(0.0);
+        let mut frame = fixtures::frame(&before, 1, 300.0, 120.0);
+        engine.animate(&mut frame, &Declarations::collect(&before), 0.0);
+
+        let after = fixtures::carrier(60.0);
+        let target = fixtures::frame(&after, 2, 300.0, 120.0);
+        let mut frame = fixtures::frame(&after, 2, 300.0, 120.0);
+        let activity = engine.animate(&mut frame, &Declarations::collect(&after), 0.016);
+        assert_eq!(activity.running, 1, "the box slides");
+        let boxed = rect_of(&frame, "/app/box");
+        let label = rect_of(&frame, "/app/box/label");
+        let boxed_target = rect_of(&target, "/app/box");
+        let label_target = rect_of(&target, "/app/box/label");
+        assert!(boxed.x < boxed_target.x, "16 ms in, the box is behind");
+        let drift = (label.x - boxed.x - (label_target.x - boxed_target.x)).abs()
+            + (label.y - boxed.y - (label_target.y - boxed_target.y)).abs();
+        assert!(
+            drift < 1e-3,
+            "the label left its box by {drift}: box {boxed:?}, label {label:?}"
+        );
+    }
+
+    /// **An ancestor's travel starts nothing.** A knob that declares a slide
+    /// moves when its own place in its parent moves, not when the whole row
+    /// is carried by a reflow or a scroll above it.
+    ///
+    /// Falsify by measuring raw targets in absolute coordinates again: the
+    /// knob trails its row for the length of the slide.
+    #[test]
+    fn an_ancestors_travel_starts_no_trajectory() {
+        let mut engine = TransitionEngine::new(slide_registry());
+        let before = fixtures::carried_knob(0.0);
+        let mut frame = fixtures::frame(&before, 1, 300.0, 200.0);
+        engine.animate(&mut frame, &Declarations::collect(&before), 0.0);
+
+        let after = fixtures::carried_knob(50.0);
+        let target = fixtures::frame(&after, 2, 300.0, 200.0);
+        let mut frame = fixtures::frame(&after, 2, 300.0, 200.0);
+        let activity = engine.animate(&mut frame, &Declarations::collect(&after), 0.016);
+        assert_eq!(activity.running, 0, "nothing moved inside its parent");
+        assert_eq!(frame.placements, target.placements);
+        assert_eq!(frame.digest, target.digest);
+    }
+
+    /// **A press response animates the press and nothing else.** A button
+    /// that a reflow moves lands with the reflow; only a press crunches it.
+    ///
+    /// Falsify by letting a press definition track layout travel: the
+    /// button slides for 70 ms while every neighbour has already landed.
+    #[test]
+    fn a_press_response_does_not_animate_layout_travel() {
+        let mut engine = TransitionEngine::new(crate::anim::shipped_registry());
+        let before = fixtures::pressable(0.0);
+        let mut frame = fixtures::frame(&before, 1, 300.0, 120.0);
+        engine.animate(&mut frame, &Declarations::collect(&before), 0.0);
+
+        let after = fixtures::pressable(40.0);
+        let target = fixtures::frame(&after, 2, 300.0, 120.0);
+        let mut frame = fixtures::frame(&after, 2, 300.0, 120.0);
+        let activity = engine.animate(&mut frame, &Declarations::collect(&after), 0.016);
+        assert_eq!(activity.running, 0, "a reflow is not a press");
+        assert_eq!(frame.placements, target.placements);
+
+        // Pressed after the move: it crunches about the new rect, and its
+        // label stays put, because a crunch scales the box in place.
+        let mut frame = fixtures::frame(&after, 3, 300.0, 120.0);
+        let index = frame
+            .placements
+            .iter()
+            .position(|p| p.id == "/app/btn")
+            .expect("placed");
+        frame.placements[index].semantics.active = true;
+        let activity = engine.animate(&mut frame, &Declarations::collect(&after), 0.032);
+        assert_eq!(activity.running, 2, "position and size crunch");
+        let pressed = rect_of(&frame, "/app/btn");
+        let resting = rect_of(&target, "/app/btn");
+        assert!(
+            pressed.x > resting.x && pressed.w < resting.w,
+            "it crunches"
+        );
+        assert_eq!(
+            rect_of(&frame, "/app/btn/label"),
+            rect_of(&target, "/app/btn/label"),
+            "a crunch does not move the label"
         );
     }
 }

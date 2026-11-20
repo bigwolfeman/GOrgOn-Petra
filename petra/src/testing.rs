@@ -517,6 +517,8 @@ pub struct Harness<C: ContentMeasure, R: RowSource> {
     pub rows: R,
     /// The measurement cache under test.
     pub cache: MeasureCache,
+    /// The collections' measured row extents under test.
+    pub extents: crate::layout::RowExtents,
     /// The state snapshot this pass reads.
     pub state: LayoutState,
     /// The theme snapshot this pass resolves token names against. Owned here
@@ -553,10 +555,22 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             content,
             rows,
             cache: MeasureCache::new(),
+            extents: crate::layout::RowExtents::new(),
             state: LayoutState::default(),
             theme: ThemeSnapshot::new(fixture_theme().clone(), 1),
             theme_rev: 1,
             scale: Scale::ONE,
+        }
+    }
+
+    /// Add every pending collection anchor shift to its scroll's offset, as
+    /// a host does after each frame ([`crate::layout::RowExtents::take_shifts`]).
+    pub fn apply_shifts(&mut self) {
+        for (scroll, delta) in self.extents.take_shifts() {
+            let at = self.state.scroll_offset(&scroll);
+            self.state
+                .scroll_offsets
+                .insert(scroll, (at + delta).max(0.0));
         }
     }
 
@@ -566,6 +580,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             content: &mut self.content,
             rows: &mut self.rows,
             cache: &mut self.cache,
+            extents: &mut self.extents,
             state: &self.state,
             theme: &self.theme,
             theme_rev: self.theme_rev,

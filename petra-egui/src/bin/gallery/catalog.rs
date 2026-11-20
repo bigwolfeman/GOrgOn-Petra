@@ -196,14 +196,13 @@ impl Default for Catalog {
             pages: page::all(),
             pending_dismiss: Vec::new(),
             theme: initial_theme(),
-            // Not `Some(theme)`. `catalog::run` builds the presenter from
-            // the same `initial_theme()`, so the window is already in
-            // that theme on its first pass and a publication here would be
-            // a redundant rebind. The tests that build a `Catalog` without
-            // `run` rely on this too: `default_presenter()` is dark and
-            // `initial_theme()` is Gray 100 unless the environment says
-            // otherwise, so the two agree.
-            pending_theme: None,
+            // Published only when it is not Gray 100. `catalog::run` builds
+            // the presenter from the same `initial_theme()`, so there the
+            // publication is one redundant rebind. A `Catalog` built without
+            // `run` (every `shots.rs` camera) starts on `default_presenter()`,
+            // which is Gray 100, and without this a `PETRA_GALLERY_THEME=g10`
+            // capture showed the switcher on Light over a Gray 100 picture.
+            pending_theme: (initial_theme() != ThemeId::Gray100).then(initial_theme),
             now: 0.0,
         }
     }

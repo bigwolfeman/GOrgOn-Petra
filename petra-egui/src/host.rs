@@ -59,8 +59,8 @@ use gorgon_petra::input::{
 };
 use gorgon_petra::layout::overlay_surface::{focus_taking_surfaces, surface_scopes};
 use gorgon_petra::layout::{
-    AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
-    TextRequest,
+    AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowExtents, RowSource,
+    ScrollStack, TextRequest,
 };
 use gorgon_petra::semantic::{
     ContributionId, ContributionLedger, ContributionStatus, PushOutcome, contribution_key,
@@ -852,6 +852,11 @@ pub struct Host<A: App> {
     shaper: GalleyShaper,
     translator: EventTranslator,
     cache: MeasureCache,
+    /// What every virtualized collection's rows measured, across frames
+    /// (`gorgon_petra::layout::extents`). Not a cache: positions are read
+    /// from it, so it is only ever changed through layout, which keeps the
+    /// visible rows still when it does.
+    extents: RowExtents,
     /// Where each contribution's tree last mounted, as the frame id of the
     /// node it hangs under, keyed by its mount key (`ui:<id>`).
     ///
@@ -979,6 +984,10 @@ pub struct Host<A: App> {
     /// not scrolled yet, and counted down from [`REVEAL_CORRECTIONS`] once
     /// it has.
     reveal_corrections: u32,
+    /// The scroll and the offset [`Self::pending_reveal`] last wrote, so a
+    /// correction can tell that something else (the wheel, the scrollbar,
+    /// the application) moved the scroll since, and yield to it.
+    reveal_wrote: Option<(String, f32)>,
     /// The application's last [`App::focus_request`] that no frame has
     /// placed yet. See [`Host::land_app_focus`].
     pending_app_focus: Option<gorgon_petra::frame::FocusTarget>,
@@ -1338,6 +1347,7 @@ impl<A: App> Host<A> {
             shaper,
             translator: EventTranslator::new(),
             cache: MeasureCache::new(),
+            extents: RowExtents::new(),
             mounted_parents: BTreeMap::new(),
             counter: FrameCounter::new(),
             state: LayoutState::default(),
@@ -1376,6 +1386,7 @@ impl<A: App> Host<A> {
             pending_copy: None,
             pending_reveal: None,
             reveal_corrections: 0,
+            reveal_wrote: None,
             pending_app_focus: None,
             selection_drag: false,
             caret: FocusCaret::new(),
@@ -1742,6 +1753,7 @@ impl<A: App> Host<A> {
             content: &mut content,
             rows: &mut self.app,
             cache: &mut self.cache,
+            extents: &mut self.extents,
             state: &self.state,
             theme,
             theme_rev: viewport.theme_rev,
@@ -1933,6 +1945,7 @@ impl<A: App> Host<A> {
         // `FocusTree::update`'s vanished-focus rule has already destroyed it
         // by the time that call runs.
         let focus_before = self.focus.current().map(str::to_owned);
+        let extents_before = self.extents.revision();
         let mut frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
 
         // `state.focused` was set from the *last* pass's reconciliation,
@@ -1986,6 +1999,16 @@ impl<A: App> Host<A> {
         // and all (`gorgon_petra::anim::engine`). A frame with nothing moving
         // comes back untouched, so an idle window's frame is byte-identical
         // to what `petrify` produced.
+        // A collection that measured rows above its first visible row moved
+        // that row in its ledger; move the scroll by the same distance so
+        // the row stays where the operator sees it on the next frame. This
+        // frame already shows it there. Any new measurement also changed a
+        // content extent this frame measured before it, so one more frame
+        // shows the extent the rows now add up to.
+        if self.apply_extent_shifts() | (self.extents.revision() != extents_before) {
+            ctx.request_repaint();
+        }
+
         let decision = self.motion.advance(ctx, &mut frame, &tree);
 
         // Tick against the frame about to be painted, not the post-petrify
@@ -3308,6 +3331,18 @@ impl<A: App> Host<A> {
             return false;
         };
         let correcting = self.reveal_corrections > 0;
+        // A correction yields to any other writer: once the wheel, the
+        // scrollbar or the application has moved the scroll the request
+        // scrolled, the reader has taken the scroll back.
+        if correcting
+            && let Some((scroll, wrote)) = &self.reveal_wrote
+            && (self.state.scroll_offset(scroll) - wrote).abs() > 0.5
+        {
+            self.pending_reveal = None;
+            self.reveal_corrections = 0;
+            self.reveal_wrote = None;
+            return false;
+        }
         // A correction waits for the frame placed at the offset it would
         // correct. The pass's first call reads the frame on screen, which
         // the last write has already moved past.
@@ -3327,9 +3362,9 @@ impl<A: App> Host<A> {
             return false;
         }
         let answer = if correcting {
-            frame.correct_reveal(request, &self.state.scroll_offsets)
+            frame.correct_reveal(request, &self.state.scroll_offsets, &self.extents)
         } else {
-            frame.reveal(request, &self.state.scroll_offsets)
+            frame.reveal(request, &self.state.scroll_offsets, &self.extents)
         };
         match answer {
             Reveal::Unplaced => {
@@ -3353,7 +3388,10 @@ impl<A: App> Host<A> {
                 } else {
                     self.reveal_corrections = REVEAL_CORRECTIONS;
                 }
-                self.write_scroll_offset(&scroll, offset, max_offset)
+                let wrote = self.write_scroll_offset(&scroll, offset, max_offset);
+                let now = self.state.scroll_offset(&scroll);
+                self.reveal_wrote = Some((scroll, now));
+                wrote
             }
         }
     }
@@ -3394,6 +3432,29 @@ impl<A: App> Host<A> {
             Axis::Horizontal => rect.x,
             Axis::Vertical => rect.y,
         }
+    }
+
+    /// Add every pending collection anchor shift to its scroll's offset
+    /// ([`RowExtents::take_shifts`]). Answers whether any offset moved.
+    ///
+    /// A shift keeps the rows on screen where they were, so the offset a
+    /// pending reveal wrote moves with it: the reveal still owns the scroll.
+    fn apply_extent_shifts(&mut self) -> bool {
+        let mut moved = false;
+        for (scroll, delta) in self.extents.take_shifts() {
+            let at = self.state.scroll_offset(&scroll);
+            let next = (at + delta).max(0.0);
+            if next != at {
+                if let Some((owned, wrote)) = &mut self.reveal_wrote
+                    && *owned == scroll
+                {
+                    *wrote = next;
+                }
+                self.state.scroll_offsets.insert(scroll, next);
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Write `desired` into `scroll`'s `scroll_offsets` entry, clamped to

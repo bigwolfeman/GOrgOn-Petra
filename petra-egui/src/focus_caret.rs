@@ -111,6 +111,9 @@ pub struct FocusCaret {
     /// Four bands, each `(x, y, w, h)`, in edge order.
     x: [[f64; 4]; BANDS],
     v: [[f64; 4]; BANDS],
+    /// The bands the last tick aimed at. When the same node moves, the
+    /// difference to the new goal is carried, not flown.
+    goal: [[f64; 4]; BANDS],
     visible: bool,
     moving: bool,
     figure: FocusFigure,
@@ -137,6 +140,7 @@ impl FocusCaret {
             id: None,
             x: [[0.0; 4]; BANDS],
             v: [[0.0; 4]; BANDS],
+            goal: [[0.0; 4]; BANDS],
             visible: false,
             moving: false,
             figure: FocusFigure::default(),
@@ -231,16 +235,30 @@ impl FocusCaret {
             self.v = [[0.0; 4]; BANDS];
             return;
         };
-        self.figure = dest.figure;
-        self.radius = dest.radius.map(str::to_owned);
-        self.mark = dest.mark;
-        self.clip = dest.clip;
         let goal = [
             components(dest.bands[0]),
             components(dest.bands[1]),
             components(dest.bands[2]),
             components(dest.bands[3]),
         ];
+        // The same node in the same figure, moved by layout or a scroll: the
+        // caret rides with it. Flying it there drew the bar where the last
+        // frame put the node while the node itself was already in its new
+        // place. Only a change of node or of figure is a hop.
+        let same_node =
+            self.visible && self.id.as_deref() == Some(dest.id) && self.figure == dest.figure;
+        if same_node {
+            for ((xs, now), was) in self.x.iter_mut().zip(&goal).zip(&self.goal) {
+                for ((x, now), was) in xs.iter_mut().zip(now).zip(was) {
+                    *x += now - was;
+                }
+            }
+        }
+        self.goal = goal;
+        self.figure = dest.figure;
+        self.radius = dest.radius.map(str::to_owned);
+        self.mark = dest.mark;
+        self.clip = dest.clip;
         let spawn = !self.visible || self.reduced_motion;
         if spawn {
             self.x = goal;
@@ -411,6 +429,55 @@ mod tests {
             mid.width()
         );
         assert_eq!(caret.bands().map(|b| b.len()), Some(1));
+    }
+
+    /// The focused node moves (a reflow, a scroll) and focus does not: the
+    /// caret lands with the node on the same tick and asks for no flight.
+    ///
+    /// Falsify by deleting the `same_node` carry in `tick`: the bar springs
+    /// from the old rect and the first frame paints it where the node was.
+    #[test]
+    fn the_same_node_moving_carries_the_caret_with_it() {
+        let mut caret = FocusCaret::new();
+        let here = node_rect();
+        let there = here.translate(vec2(0.0, 26.0));
+        caret.tick(Some(dest("a", here, FocusFigure::BarUnder)), 0.0);
+        caret.tick(Some(dest("a", there, FocusFigure::BarUnder)), FRAME_DT);
+        assert!(!caret.is_moving(), "a carried caret is not a hop");
+        let want: Vec<Rect> = crate::paint::caret_bands(there, FocusFigure::BarUnder, Scale::ONE)
+            .into_iter()
+            .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+            .collect();
+        assert_eq!(caret.bands(), Some(want));
+    }
+
+    /// A hop already in flight is carried too: it keeps flying toward the
+    /// node, measured from where the node now is.
+    #[test]
+    fn a_hop_in_flight_is_carried_with_its_moving_target() {
+        let mut caret = FocusCaret::new();
+        let a = node_rect();
+        let b = a.translate(vec2(200.0, 0.0));
+        caret.tick(Some(dest("a", a, FocusFigure::Border)), 0.0);
+        caret.tick(Some(dest("b", b, FocusFigure::Border)), FRAME_DT);
+        let mid = caret.rect().expect("in flight");
+        let b_moved = b.translate(vec2(0.0, 30.0));
+        let mut twin = FocusCaret::new();
+        twin.tick(Some(dest("a", a, FocusFigure::Border)), 0.0);
+        twin.tick(Some(dest("b", b, FocusFigure::Border)), FRAME_DT);
+        caret.tick(
+            Some(dest("b", b_moved, FocusFigure::Border)),
+            2.0 * FRAME_DT,
+        );
+        twin.tick(Some(dest("b", b, FocusFigure::Border)), 2.0 * FRAME_DT);
+        let carried = caret.rect().expect("in flight");
+        let still = twin.rect().expect("in flight");
+        assert!(caret.is_moving(), "the hop goes on");
+        assert!(mid.min.x < carried.min.x, "and keeps closing on the node");
+        assert!(
+            (carried.min.y - still.min.y - 30.0).abs() < 1e-3,
+            "the in-flight bar rides the node's 30 unit move: {carried:?} vs {still:?}"
+        );
     }
 
     #[test]

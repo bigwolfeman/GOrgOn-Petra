@@ -36,6 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke as EguiStroke, StrokeKind, Vec2};
 use gorgon_petra::draw::{
     Affine, AssetRef, ColorRef, Command, Corners, DrawList, Fit, PathVerb, Stroke, Width,
+    curve_segments,
 };
 use gorgon_petra::frame::{round_coord, round_rect};
 use gorgon_petra::geom::{Point, Rect as PetraRect, Scale};
@@ -332,7 +333,7 @@ fn draw_one(
             closed,
             paint,
         } => {
-            let points = flatten(verbs, transform, scale);
+            let points = flatten(verbs, transform);
             if points.len() < 2 {
                 report.silent += 1;
                 return;
@@ -505,61 +506,72 @@ fn snap_edges(rect: PetraRect, scale: Scale) -> PetraRect {
     PetraRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
 }
 
-/// The largest distance, in device pixels, a flattened bézier may sit off
-/// the true curve. The same tenth of a pixel as [`ELLIPSE_SAGITTA_PX`].
+/// Every point of `verbs` under `transform`, béziers cut into exactly
+/// [`curve_segments`] equal parameter steps.
 ///
-/// Passed to `epaint` explicitly. Its default tolerance is a thousandth of
-/// the distance between the curve's end points *along x*
-/// (`epaint-0.36.1/src/shapes/bezier_shape.rs:301`), so a curve whose ends
-/// share an x (the quarter arc from 45 to 135 degrees, or any vertical
-/// S-curve) gets a tolerance of zero and fails `epaint`'s debug assertion, and
-/// a tall, narrow curve is cut into far more pieces than a wide one of the
-/// same length.
-const BEZIER_TOLERANCE_PX: f32 = 0.1;
-
-/// Every point of `verbs` under `transform`, béziers flattened by `epaint`'s
-/// own subdivision to [`BEZIER_TOLERANCE_PX`] at `scale`.
-///
-/// `epaint`'s flattener rather than one written here: the tessellator is going
-/// to subdivide these curves anyway, and two subdivision rules in one pipeline
-/// is how a stroke and the fill under it end up with different silhouettes.
-/// Control points are transformed and never rounded.
-fn flatten(verbs: &[PathVerb], transform: Affine, scale: Scale) -> Vec<Pos2> {
-    let tolerance = Some(BEZIER_TOLERANCE_PX / scale.factor());
+/// Flattened here rather than by `epaint`'s adaptive flattener because the
+/// draw list's segment bound (`MAX_DRAW_PATH_SEGMENTS`) is only the cost when
+/// the interpreter cuts each curve into the count the bound summed. The count
+/// is taken in canvas logical units under the pushed transform's scale, so it
+/// does not depend on the display scale: a list costs the same on every
+/// target, and the tolerance it holds, [`gorgon_petra::draw::CURVE_TOLERANCE`]
+/// logical units, is a tenth of a device pixel at scale 2. The tessellator
+/// strokes and fills the polyline as given, so a fill and the stroke over it
+/// share one silhouette. Control points are transformed and never rounded.
+fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Pos2> {
     let at = |p: Point| {
         let moved = transform.apply(p);
         Pos2::new(moved.x, moved.y)
     };
+    let scale = [transform.sx.abs(), transform.sy.abs()];
     let mut out: Vec<Pos2> = Vec::with_capacity(verbs.len());
+    let mut last: Option<Point> = None;
     for verb in verbs {
-        match verb {
-            PathVerb::MoveTo(p) | PathVerb::LineTo(p) => out.push(at(*p)),
+        let from = last.or(verb.first()).unwrap_or(Point::new(0.0, 0.0));
+        match *verb {
+            PathVerb::MoveTo(p) | PathVerb::LineTo(p) => out.push(at(p)),
             PathVerb::QuadTo { ctrl, to } => {
-                let from = out.last().copied().unwrap_or_else(|| at(*ctrl));
-                let curve = egui::epaint::QuadraticBezierShape::from_points_stroke(
-                    [from, at(*ctrl), at(*to)],
-                    false,
-                    Color32::TRANSPARENT,
-                    EguiStroke::NONE,
-                );
-                // `flatten` repeats the start point, which is already in
-                // `out`.
-                out.extend(curve.flatten(tolerance).into_iter().skip(1));
+                let n = curve_segments(verb, from, scale);
+                let [p0, p1, p2] = [at(from), at(ctrl), at(to)];
+                // Step 0 is the start point, already in `out` (or, for a
+                // curve that opens a path, its first control point, which is
+                // where the interpreter has always drawn such a curve from).
+                if last.is_none() {
+                    out.push(p0);
+                }
+                out.extend((1..=n).map(|i| {
+                    let t = i as f32 / n as f32;
+                    let u = 1.0 - t;
+                    let w = [u * u, 2.0 * u * t, t * t];
+                    Pos2::new(
+                        w[0] * p0.x + w[1] * p1.x + w[2] * p2.x,
+                        w[0] * p0.y + w[1] * p1.y + w[2] * p2.y,
+                    )
+                }));
             }
             PathVerb::CubicTo { c1, c2, to } => {
-                let from = out.last().copied().unwrap_or_else(|| at(*c1));
-                let curve = egui::epaint::CubicBezierShape::from_points_stroke(
-                    [from, at(*c1), at(*c2), at(*to)],
-                    false,
-                    Color32::TRANSPARENT,
-                    EguiStroke::NONE,
-                );
-                out.extend(curve.flatten(tolerance).into_iter().skip(1));
+                let n = curve_segments(verb, from, scale);
+                let [p0, p1, p2, p3] = [at(from), at(c1), at(c2), at(to)];
+                if last.is_none() {
+                    out.push(p0);
+                }
+                out.extend((1..=n).map(|i| {
+                    let t = i as f32 / n as f32;
+                    let u = 1.0 - t;
+                    let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                    Pos2::new(
+                        w[0] * p0.x + w[1] * p1.x + w[2] * p2.x + w[3] * p3.x,
+                        w[0] * p0.y + w[1] * p1.y + w[2] * p2.y + w[3] * p3.y,
+                    )
+                }));
             }
             // The `closed` flag on the command is what closes the shape;
             // repeating the first point here would put a zero-length segment
             // in every closed path.
             PathVerb::Close => {}
+        }
+        if let Some(end) = verb.end() {
+            last = Some(end);
         }
     }
     out
@@ -675,12 +687,12 @@ fn resolve_stroke(
 #[cfg(test)]
 mod tests {
     use super::{
-        BEZIER_TOLERANCE_PX, CanvasAssets, CanvasReport, HostImages, Ink, NoAssets, flatten,
-        paint_canvas, snapped,
+        CanvasAssets, CanvasReport, HostImages, Ink, NoAssets, flatten, paint_canvas, snapped,
     };
     use egui::{Color32, Shape};
     use gorgon_petra::draw::{
-        Affine, AssetRef, ColorRef, Command, Corners, DrawList, Fit, Paint, PathVerb, Stroke, Width,
+        Affine, AssetRef, ColorRef, Command, Corners, DrawList, Fit, Paint, PathVerb, Stroke,
+        Width, curve_segments,
     };
     use gorgon_petra::geom::{Point, Rect as PetraRect, Scale, Size};
     use gorgon_petra::token::DerivedState;
@@ -1220,35 +1232,42 @@ mod tests {
         assert!(!report.is_complete());
     }
 
-    /// A cubic whose two ends share an x flattens at the device tolerance.
-    /// `epaint`'s default would be zero there and fail its own assertion.
+    /// A cubic flattens into exactly the segments the draw list's bound
+    /// counted, and every chord holds the logical tolerance under the
+    /// pushed zoom. The curve's two ends share an x, which is where
+    /// `epaint`'s default flattener, used before, had a tolerance of zero.
     #[test]
-    fn a_bezier_whose_ends_share_an_x_flattens_to_a_fine_polyline() {
+    fn a_bezier_flattens_into_the_counted_segments_within_tolerance() {
         // A quarter arc from 45 to 135 degrees about (16, 16), radius 10.
         let (r, k) = (10.0_f32, 0.552_284_8_f32);
         let c = std::f32::consts::FRAC_1_SQRT_2 * r;
-        let verbs = [
-            PathVerb::MoveTo(Point::new(16.0 + c, 16.0 + c)),
-            PathVerb::CubicTo {
-                c1: Point::new(16.0 + c - k * c, 16.0 + c + k * c),
-                c2: Point::new(16.0 - c + k * c, 16.0 + c + k * c),
-                to: Point::new(16.0 - c, 16.0 + c),
-            },
-        ];
-        for factor in [1.0_f32, 4.0] {
-            let points = flatten(
-                &verbs,
-                Affine::IDENTITY,
-                Scale::new(factor).expect("a positive scale"),
-            );
-            assert!(points.len() > 4, "{factor}x: {} points", points.len());
-            // Every point lies within the tolerance (plus float slack) of
-            // the circle.
-            for p in &points {
-                let off = ((p.x - 16.0).hypot(p.y - 16.0) - r).abs() * factor;
+        let from = Point::new(16.0 + c, 16.0 + c);
+        let cubic = PathVerb::CubicTo {
+            c1: Point::new(16.0 + c - k * c, 16.0 + c + k * c),
+            c2: Point::new(16.0 - c + k * c, 16.0 + c + k * c),
+            to: Point::new(16.0 - c, 16.0 + c),
+        };
+        let verbs = [PathVerb::MoveTo(from), cubic];
+        // The cubic is not quite the circle: its own radial error, at most
+        // 0.03% of the radius, is added to the chord's allowance.
+        let fit = 3e-4 * r;
+        for zoom in [1.0_f32, 4.0] {
+            let transform = Affine {
+                tx: 0.0,
+                ty: 0.0,
+                sx: zoom,
+                sy: zoom,
+            };
+            let points = flatten(&verbs, transform);
+            let n = curve_segments(&cubic, from, [zoom, zoom]);
+            assert_eq!(points.len(), n + 1, "{zoom}x: one point per segment end");
+            let centre = egui::Pos2::new(16.0 * zoom, 16.0 * zoom);
+            for pair in points.windows(2) {
+                let mid = pair[0] + (pair[1] - pair[0]) / 2.0;
+                let off = ((mid - centre).length() - r * zoom).abs();
                 assert!(
-                    off < BEZIER_TOLERANCE_PX + 0.05,
-                    "{factor}x: {p:?} is {off} px off"
+                    off <= gorgon_petra::draw::CURVE_TOLERANCE + fit * zoom + 1e-3,
+                    "{zoom}x: a chord sits {off} off the arc"
                 );
             }
         }

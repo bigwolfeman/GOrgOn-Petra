@@ -101,6 +101,10 @@
 
 use std::sync::Arc;
 
+use super::column_resize::{
+    ADJUSTS_ON_CHANGE, DIVIDER, column_divider, divider_of, drag_pair, is_divider_key,
+    normalise_weights,
+};
 use super::controls::{CheckState, checkbox_box, radio_box_node};
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::list_box::edge_row;
@@ -117,8 +121,8 @@ use super::tokens::{
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    Anchor, AxisConstraint, Behaviour, Edge, Fit, FocusFigure, InsetRefs, Intent, Interaction,
-    Justify, Key, NodeKind, Phase, Props, Role, Semantics, TrackSize, ViewNode,
+    Anchor, AxisConstraint, Behaviour, Edge, Fit, FocusFigure, InsetRefs, Intent, Interaction, Key,
+    NodeKind, Phase, Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon extra-small row height.
@@ -161,19 +165,7 @@ const _: () = assert!(SKELETON_BAR_H == 16.0);
 
 const ROW_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 const SORT_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
-const DIVIDER: f32 = 8.0;
-const DIVIDER_KEY: &str = "div";
 const GRIP_KEY: &str = "grip";
-/// Narrowest a data column may be dragged.
-///
-/// A cell spends `$spacing-05` (16) on each side, so a 32-unit floor is
-/// all padding. Wrap then stacks one glyph per line and the row grows —
-/// the compound table shot of 2026-09-13. 96 is that padding plus 64 of
-/// content: a short header still reads, and [`TextWrap::Ellipsis`] keeps
-/// the row at one line.
-const MIN_COLUMN: f32 = 96.0;
-
-const _: () = assert!(MIN_COLUMN == 96.0);
 /// Carbon `.cds--table-column-checkbox` `min-inline-size: 2.5rem`.
 const SELECT_COL: f32 = 40.0;
 /// [`SELECT_COL`] plus a 16-unit chevron and [`SPACING_03`] (8) between.
@@ -181,19 +173,12 @@ const SELECT_COL_EXPAND: f32 = 64.0;
 /// Icon 16 plus the cell's `$spacing-05` inline pad on both sides.
 const MENU_COL: f32 = 48.0;
 const GRIP_COL: f32 = 48.0;
-const DIVIDER_INTENTS: &[Interaction] = &[Interaction::Drag];
 const GRIP_INTENTS: &[Interaction] = &[Interaction::Drag];
 
 /// Spec 010: exclusive among siblings.
 const SELECTS_ON_RELEASE: Behaviour = Behaviour {
     intent: Intent::Select,
     phase: Phase::OnRelease,
-};
-
-/// Spec 010: live column resize under drag.
-const ADJUSTS_ON_CHANGE: Behaviour = Behaviour {
-    intent: Intent::Adjust,
-    phase: Phase::OnChange,
 };
 
 /// Spec 010: sort / icon / batch action — one shot.
@@ -577,22 +562,10 @@ pub fn data_table_weights_at(
     weights: &[f32],
 ) -> Option<Vec<f32>> {
     let (row, index) = divider_of(node)?;
-    if index + 1 >= weights.len() {
-        return None;
-    }
     let columns = data_column_rects(frame, row);
     let left = columns.get(index)?.rect;
     let right = columns.get(index + 1)?.rect;
-    let travel = right.right() - left.x - DIVIDER;
-    if travel <= 2.0 * MIN_COLUMN {
-        return None;
-    }
-    let want = (pos.x - DIVIDER / 2.0 - left.x).clamp(MIN_COLUMN, travel - MIN_COLUMN);
-    let pair = weights[index] + weights[index + 1];
-    let mut out = weights.to_vec();
-    out[index] = pair * want / travel;
-    out[index + 1] = pair - out[index];
-    Some(out)
+    drag_pair(left, right, index, pos, weights)
 }
 
 /// Column weights implied by the placed widths of the table containing `node`.
@@ -631,13 +604,7 @@ fn data_column_rects<'a>(frame: &'a PetrifiedFrame, row: &str) -> Vec<&'a crate:
             if rest == SELECT_CELL || rest == GRIP_KEY || rest == ROW_MENU {
                 return false;
             }
-            if rest
-                .strip_prefix(DIVIDER_KEY)
-                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
-            {
-                return false;
-            }
-            true
+            !is_divider_key(rest)
         })
         .collect()
 }
@@ -653,30 +620,6 @@ pub fn data_table_grip_row(node: &str) -> Option<&str> {
         prev = segment;
     }
     None
-}
-
-fn divider_of(node: &str) -> Option<(&str, usize)> {
-    let mut offset = 0usize;
-    for segment in node.split('/') {
-        let start = offset;
-        offset += segment.len() + 1;
-        if let Some(index) = segment
-            .strip_prefix(DIVIDER_KEY)
-            .and_then(|digits| digits.parse::<usize>().ok())
-        {
-            return Some((&node[..start.saturating_sub(1)], index));
-        }
-    }
-    None
-}
-
-fn normalise_weights(weights: &[f32], ncols: usize) -> Vec<f32> {
-    (0..ncols)
-        .map(|i| match weights.get(i) {
-            Some(w) if *w > 0.0 && w.is_finite() => *w,
-            _ => 1.0,
-        })
-        .collect()
 }
 
 fn lay_out_columns(
@@ -808,24 +751,6 @@ fn visit_row_grid_mut(row: &mut ViewNode, f: &mut impl FnMut(&mut ViewNode)) {
     if let Some(cells) = row.children.iter_mut().find(|c| c.key.as_str() == "cells") {
         f(Arc::make_mut(cells));
     }
-}
-
-fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
-    let rule = super::rule("rule", Axis::Vertical, BORDER_SUBTLE);
-    let label = match name {
-        Some(name) if !name.trim().is_empty() => format!("Resize column {name}"),
-        _ => format!("Resize column {}", index + 1),
-    };
-    let mut node = stack(
-        format!("{DIVIDER_KEY}{index}"),
-        Axis::Horizontal,
-        None,
-        vec![rule],
-    );
-    node.props.align = Some(Align::Stretch);
-    node.props.justify = Some(Justify::Center);
-    node.interactive(Role::Separator, label, DIVIDER_INTENTS)
-        .with_behaviour(ADJUSTS_ON_CHANGE)
 }
 
 fn grip_cell() -> ViewNode {
@@ -1973,7 +1898,8 @@ mod tests {
         if node.interactions.contains(&Interaction::Drag) {
             let key = node.key.as_str();
             assert!(
-                key.starts_with(super::DIVIDER_KEY) || key == super::GRIP_KEY,
+                key.starts_with(crate::component::column_resize::DIVIDER_KEY)
+                    || key == super::GRIP_KEY,
                 "data table `{}` declared Drag but is not a divider or grip",
                 node.key
             );
@@ -2073,9 +1999,9 @@ mod tests {
         .expect("a drag on a live divider resolves");
         let width = squashed[0] / (squashed[0] + squashed[1]) * travel;
         assert!(
-            (width - super::MIN_COLUMN).abs() < 1.0,
+            (width - crate::component::column_resize::MIN_COLUMN).abs() < 1.0,
             "the first column was dragged to {width}, past the {} floor",
-            super::MIN_COLUMN
+            crate::component::column_resize::MIN_COLUMN
         );
         let other = data_table_weights_at(
             &frame,
@@ -2086,9 +2012,9 @@ mod tests {
         .expect("a drag past the right end resolves");
         let other_w = other[1] / (other[0] + other[1]) * travel;
         assert!(
-            (other_w - super::MIN_COLUMN).abs() < 1.0,
+            (other_w - crate::component::column_resize::MIN_COLUMN).abs() < 1.0,
             "the second column was dragged to {other_w}, past the {} floor",
-            super::MIN_COLUMN
+            crate::component::column_resize::MIN_COLUMN
         );
     }
 

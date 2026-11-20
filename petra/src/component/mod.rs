@@ -99,6 +99,7 @@ mod code_snippet;
 /// Test-only; see `crate::token::colourblind` for the arithmetic.
 #[cfg(test)]
 mod colourblind;
+mod column_resize;
 mod contained_list;
 mod content_switcher;
 mod context_menu;

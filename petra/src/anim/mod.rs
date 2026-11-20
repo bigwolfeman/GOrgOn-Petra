@@ -168,6 +168,76 @@ pub(crate) mod fixtures {
             )
     }
 
+    /// A rigid spacer `offset` units long on `axis`.
+    fn gap(key: &str, axis: Axis, offset: f32) -> ViewNode {
+        let rigid = AxisConstraint {
+            min: Some(offset),
+            max: Some(offset),
+            priority: 10,
+        };
+        let constraints = match axis {
+            Axis::Horizontal => Constraints {
+                horizontal: rigid,
+                ..Constraints::default()
+            },
+            Axis::Vertical => Constraints {
+                vertical: rigid,
+                ..Constraints::default()
+            },
+        };
+        ViewNode::new(NodeKind::Spacer, key).with_constraints(constraints)
+    }
+
+    fn label(key: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Text, key).with_props(Props {
+            text: Some(key.into()),
+            ..Props::default()
+        })
+    }
+
+    fn row(key: &str, axis: Axis) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, key).with_props(Props {
+            axis: Some(axis),
+            ..Props::default()
+        })
+    }
+
+    /// `/app/box`, a container that slides, `offset` units from the left,
+    /// holding `/app/box/label`.
+    pub fn carrier(offset: f32) -> ViewNode {
+        row("app", Axis::Horizontal)
+            .child(gap("lead", Axis::Horizontal, offset))
+            .child(
+                row("box", Axis::Horizontal)
+                    .with_transition("slide")
+                    .child(label("label")),
+            )
+    }
+
+    /// `/app/row/knob` declares a slide; `lead` moves the whole row down and
+    /// leaves the knob's place inside the row alone.
+    pub fn carried_knob(lead: f32) -> ViewNode {
+        row("app", Axis::Vertical)
+            .child(gap("lead", Axis::Vertical, lead))
+            .child(
+                row("row", Axis::Horizontal)
+                    .child(gap("inset", Axis::Horizontal, 10.0))
+                    .child(label("knob").with_transition("slide")),
+            )
+    }
+
+    /// `/app/btn`, a box that names the shipped press response, `offset`
+    /// units from the left, holding `/app/btn/label`.
+    pub fn pressable(offset: f32) -> ViewNode {
+        row("app", Axis::Horizontal)
+            .child(gap("lead", Axis::Horizontal, offset))
+            .child(
+                row("btn", Axis::Horizontal)
+                    .with_transition(crate::anim::BUTTON_PRESS)
+                    .child(label("label")),
+            )
+    }
+
     /// A tree with one hosted (image) node, ambient or not.
     ///
     /// `NodeKind::Image` with a source is one of exactly two payloads

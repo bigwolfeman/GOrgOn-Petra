@@ -56,9 +56,19 @@ impl RowSource for TokenRows {
                     "background".into(),
                     TokenName::new(self.background).unwrap(),
                 );
+                // Pinned to the estimate, so the window the offset selects
+                // is the one the comments below count.
                 Arc::new(
                     ViewNode::new(NodeKind::Text, Key::new(format!("row-{index}")))
-                        .with_props(props),
+                        .with_props(props)
+                        .with_constraints(Constraints {
+                            vertical: AxisConstraint {
+                                min: Some(ROW_EXTENT),
+                                max: Some(ROW_EXTENT),
+                                priority: 0,
+                            },
+                            ..Constraints::default()
+                        }),
                 )
             })
             .collect()

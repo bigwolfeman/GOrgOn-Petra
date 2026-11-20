@@ -1403,14 +1403,35 @@ fn insert_field_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
     }
 }
 
+/// Where the interaction ladder starts: of the ground and
+/// `surface.layer-one`, the one further in `mode`'s direction.
+///
+/// **A state must clear both surfaces a row can sit on, so it starts past
+/// both.** The dark sets always step up, so this is `layers[1]` there. The
+/// light sets alternate: White's layer one is the darker of the pair, Gray
+/// 10's is the lighter. Stepping Gray 10's white layer one down by the hover
+/// step landed on `#f3f3f3`, one level off its `#f2f2f2` ground, so a hovered
+/// row read as a hole through the card. Carbon anchors both light themes'
+/// ladders on the same grey for the same reason: `$layer-hover-01` is
+/// `gray-10-hover` and `$layer-selected-01` is `gray-20` in White and in Gray
+/// 10 alike (`@carbon/themes` `tokens/themes/{white,g10}/theme.tokens.json`).
+fn state_base(layers: &[[u8; 3]; 4], mode: ThemeMode) -> [u8; 3] {
+    let (ground, layer) = (layers[0], layers[1]);
+    let darker = lightness_of(ground) < lightness_of(layer);
+    match (mode, darker) {
+        (ThemeMode::Light, true) | (ThemeMode::Dark, false) => ground,
+        _ => layer,
+    }
+}
+
 /// Assign the interaction-state surfaces by walking the ladder off
-/// `layers[1]`, in `mode`'s direction.
+/// [`state_base`], in `mode`'s direction.
 fn insert_state_set(
     values: &mut BTreeMap<TokenName, TokenValue>,
     layers: &[[u8; 3]; 4],
     mode: ThemeMode,
 ) {
-    let base = layers[1];
+    let base = state_base(layers, mode);
     for (token, delta) in STATE_TOKENS {
         values.insert(
             name(token),
@@ -2121,7 +2142,19 @@ const SHADOW_TOKENS: [&str; 2] = ["shadow.raised", "shadow.overlay"];
 const LIGHT_SHADOW_ALPHAS: [u8; 2] = [64, 88];
 
 /// The dark theme's shadow alphas. Higher than [`LIGHT_SHADOW_ALPHAS`] —
-/// 38% and 50% — because black on a dark ground has less room to darken it.
+/// 38% and 80% — because black on a dark ground has less room to darken it.
+///
+/// **`shadow.overlay` is Carbon's `$shadow`, 80% black, since 2026-11-11.**
+/// A menu or a popover is painted on layer one, the same tone as the
+/// sidebar or the card it opens over, so the shadow is the only thing that
+/// draws its edge. At 50% that edge was too faint to find against the
+/// sidebar. Carbon's dark themes put one 80% black shadow under every menu,
+/// dropdown and overflow menu (`@carbon/themes`
+/// `tokens/themes/{g90,g100}/theme.tokens.json`: `shadow` is `black` with
+/// alpha 0.8; the light themes use 0.3). The light overlay stays at 34%,
+/// above Carbon's 30%, because the 2026-08-26 capture found nothing weaker
+/// visible on a light card. `shadow.raised` has no Carbon counterpart
+/// (Carbon tiles carry no shadow) and is unchanged.
 ///
 /// **Raised with the light pair on 2026-08-26**, so dark stays stronger
 /// than light (`the_shadow_set_is_black_and_deepens_with_its_ground`).
@@ -2135,7 +2168,7 @@ const LIGHT_SHADOW_ALPHAS: [u8; 2] = [64, 88];
 /// cannot prove the shadow is visible *on a screen*, because a token test
 /// has no pixels: that is a capture's job, and until a capture exists this
 /// figure is the honest ceiling on what has been shown.
-const DARK_SHADOW_ALPHAS: [u8; 2] = [96, 128];
+const DARK_SHADOW_ALPHAS: [u8; 2] = [96, 204];
 
 /// Assign a mode's shadow colours into a theme's value map. Both themes call
 /// this for the same reason [`insert_layer_set`] exists: two hand-copied
@@ -2726,8 +2759,9 @@ mod tests {
         MIN_DIVIDER_CONTRAST, MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS,
         RULE_HIGHLIGHT_DELTA, RULE_SHADOW_DELTA, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP,
         SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES,
-        SPACING_RAMP, SPRING_SET, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for, corners_for, dark,
-        light, lightness_of, opaque_value, rule_stroke, shipped, standard_vocabulary,
+        SPACING_RAMP, SPRING_SET, STATE_TOKENS, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for,
+        corners_for, dark, light, lightness_of, opaque_value, rule_stroke, shipped,
+        standard_vocabulary,
     };
     use crate::token::ThemeId;
     use crate::token::ThemeMode;
@@ -4312,9 +4346,46 @@ mod tests {
     /// while every other check still passes. Gray 90 reaches only its
     /// ground: its own fill `#de2828` is 3.20:1 on `#262626` and 2.79:1 on
     /// `#303030`. The fill was set for the protanope ΔE floor against the
-    /// statuses (`GRAY90_DANGER_FILL`), not for depth.
+    /// statuses (`GRAY90_DANGER_FILL`), not for depth, and no white-labelled
+    /// fill can do better on that layer
+    /// ([`no_white_labelled_fill_clears_gray90_layer_one`]).
     const DEEPEST_DANGER_LAYER: [(&str, usize); 4] =
         [("white", 3), ("g10", 3), ("g90", 0), ("g100", 1)];
+
+    /// Gray 90's danger fill cannot reach layer one with a white label, by
+    /// arithmetic rather than by tuning.
+    ///
+    /// White ink at SC 1.4.3's 4.5:1 caps the fill's relative luminance at
+    /// `1.05 / 4.5 - 0.05`. SC 1.4.11's 3:1 against `surface.layer-one`
+    /// floors it at `3 · (L(layer one) + 0.05) - 0.05`. On Gray 90's
+    /// `#303030` the floor sits above the cap, so no colour satisfies both,
+    /// and [`DEEPEST_DANGER_LAYER`]'s `("g90", 0)` is a limit of the palette,
+    /// not a fill someone forgot to retune. Carbon's own Gray 90 pairs
+    /// `#da1e28` with a lighter layer one (`#393939`) at 2.31:1. Holding the
+    /// floor on layer one needs a darker layer one or a dark label, and both
+    /// are palette decisions, recorded in this test so a retune starts from
+    /// the arithmetic.
+    ///
+    /// Falsify by lowering Gray 90's layer one to `#2c2c2c`: the floor drops
+    /// under the cap and this test reports that a fill now exists.
+    #[test]
+    fn no_white_labelled_fill_clears_gray90_layer_one() {
+        let theme = theme_named("g90");
+        let ink = theme_color(&theme, ON_COLOUR_TOKEN).relative_luminance();
+        let layer = theme_color(&theme, LAYER_TOKENS[1]).relative_luminance();
+        let cap = (ink + 0.05) / 4.5 - 0.05;
+        let floor = MIN_SURFACE_CONTRAST * (layer + 0.05) - 0.05;
+        assert!(
+            floor > cap,
+            "g90: a fill between luminance {floor:.4} and {cap:.4} now carries a \
+             white label at 4.5:1 and clears 3:1 on layer one; retune \
+             GRAY90_DANGER_FILL into that band and raise DEEPEST_DANGER_LAYER"
+        );
+        // And the shipped fill sits under the cap, which is the half of the
+        // pair this palette chose.
+        let fill = theme_color(&theme, DANGER_FILL_TOKEN).relative_luminance();
+        assert!(fill <= cap, "g90: the danger fill no longer carries white");
+    }
 
     /// [`DANGER_FILL_TOKEN`] carries its label at the body-text floor, is
     /// findable on every layer it is declared paintable on, and is still a
@@ -4825,6 +4896,22 @@ mod tests {
     /// over so many pixels that none of them reach this delta, and it cannot
     /// judge taste. A capture owns all three. What this stops is the alpha
     /// silently going to nothing.
+    /// A menu's edge, on the dark themes, is Carbon's: `shadow.overlay` is
+    /// `$shadow`, 80% black. A menu shares layer one with the surface it
+    /// opens over, so this shadow is the only edge it has. Falsify by
+    /// putting the dark overlay back to 50%.
+    #[test]
+    fn the_dark_overlay_shadow_is_carbons_shadow() {
+        for label in ["g90", "g100"] {
+            let shadow = theme_color(&theme_named(label), "shadow.overlay");
+            assert!(
+                (shadow.a - 0.8).abs() < 0.5 / 255.0,
+                "{label}: shadow.overlay is {}% black; Carbon's $shadow is 80%",
+                shadow.a * 100.0
+            );
+        }
+    }
+
     #[test]
     fn the_shadow_set_is_black_and_deepens_with_its_ground() {
         /// The smallest CIE L\* drop a shadow may make on the worst ground
@@ -5005,6 +5092,30 @@ mod tests {
         }
     }
 
+    /// A state surface is told apart from both surfaces a row sits on.
+    ///
+    /// Gray 10's hover sat one sRGB level off its ground (`#f3f3f3` on
+    /// `#f2f2f2`): a hovered row on a card read as a hole through to the
+    /// page. Every state token must sit at least the hover step away from the
+    /// ground and from layer one, in every theme. Falsify by anchoring
+    /// `state_base` on `layers[1]` again: Gray 10 fails here.
+    #[test]
+    fn every_state_clears_the_ground_and_layer_one() {
+        for (label, theme) in themes() {
+            for surface in [LAYER_TOKENS[0], LAYER_TOKENS[1]] {
+                let under = lightness_of_token(&theme, surface);
+                for (token, _) in STATE_TOKENS {
+                    let gap = (lightness_of_token(&theme, token) - under).abs();
+                    assert!(
+                        gap >= HOVER_STEP - 0.6,
+                        "{label}/{token} sits {gap:.2} L* off {surface}; under \
+                         the {HOVER_STEP} hover step it reads as that surface"
+                    );
+                }
+            }
+        }
+    }
+
     /// The interaction ladder is ordered, visible, and never as loud as a
     /// nesting change.
     ///
@@ -5069,12 +5180,19 @@ mod tests {
 
         for (label, theme) in themes() {
             let sign = mode_sign(theme.mode());
-            let base = lightness_of_token(&theme, LAYER_TOKENS[1]);
+            // The ladder starts past both the ground and layer one
+            // (`state_base`), so it is measured from that side of the pair.
+            let pair = [LAYER_TOKENS[0], LAYER_TOKENS[1]].map(|t| lightness_of_token(&theme, t));
+            let base = if sign < 0.0 {
+                pair[0].min(pair[1])
+            } else {
+                pair[0].max(pair[1])
+            };
             for (token, step) in ladder {
                 let moved = lightness_of_token(&theme, token) - base;
                 assert!(
                     (moved - sign * step).abs() < 0.6,
-                    "{label}/{token} moved {moved:.2} L* off surface.layer-one; \
+                    "{label}/{token} moved {moved:.2} L* off its base; \
                      the ladder asks for {:.2}. Sign wrong means the state moves \
                      toward the theme's own ground, where there is no room.",
                     sign * step

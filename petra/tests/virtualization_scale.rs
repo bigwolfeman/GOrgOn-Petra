@@ -586,9 +586,25 @@ fn a_long_scroll_past_every_row_does_not_accumulate_memory() {
          sweep added {tail_growth} bytes on top of {} already held",
         checkpoints[2]
     );
+    // The rows are bare text, one 16-unit line under a 24-unit estimate, so
+    // a window covers the viewport and both overscans at the measured 16.
+    let line = MonoContent::new().line_h;
+    let window = ((VIEWPORT.h + 2.0 * OVERSCAN) / line).ceil() as usize + 2;
     assert!(
-        rows_seen <= 32,
-        "every frame of the sweep must stay windowed; the widest placed {rows_seen} rows"
+        rows_seen <= window,
+        "every frame of the sweep must stay windowed; the widest placed {rows_seen} rows \
+         against a {window}-row window"
+    );
+    // The ledger of measured row extents is the other thing a long scroll
+    // could grow, and it is bounded too.
+    let measured = h
+        .extents
+        .list("/list/rows")
+        .map_or(0, gorgon_petra::layout::extents::ListExtents::measured);
+    println!("SCALE session_rows_measured={measured}");
+    assert!(
+        measured <= gorgon_petra::layout::extents::ROW_CAP,
+        "the row ledger kept {measured} rows, past its cap"
     );
 
     drop(tree);

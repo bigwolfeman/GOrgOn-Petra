@@ -24,7 +24,7 @@
 //! time, because all three produce a *wrong picture* under a digest that says
 //! the frame is right:
 //!
-//! * over budget ([`MAX_DRAW_COMMANDS`], [`MAX_DRAW_PATH_VERBS`]) — truncating
+//! * over budget ([`MAX_DRAW_COMMANDS`], [`MAX_DRAW_PATH_SEGMENTS`]) — truncating
 //!   at paint time and reporting success is the failure mode `PaintReport`
 //!   exists to catch, not to launder (§5);
 //! * a non-convex filled [`Command::Path`] — `epaint` fills convex polygons
@@ -73,19 +73,72 @@ pub const VERSION: &str = "drawlist-v1";
 /// and tessellate, so the bound stays.
 pub const MAX_DRAW_COMMANDS: usize = 4096;
 
-/// How many path verbs one canvas may carry, summed over every
-/// [`Command::Path`] in the list.
+/// How many straight segments one canvas's paths may flatten into, summed
+/// over every [`Command::Path`] in the list.
 ///
 /// Separate from [`MAX_DRAW_COMMANDS`] because the two costs are different:
-/// a command is a dispatch, and a verb is tessellation work. One `Path` of
-/// twenty thousand verbs is one command and is refused here.
+/// a command is a dispatch, and a segment is tessellation work. One `Path` of
+/// twenty thousand segments is one command and is refused here.
 ///
-/// **This bounds straight segments, not curves** (measured 2026-11-11,
-/// `contracts/draw-list.md` §5). 16384 `LineTo`s paint and tessellate in
-/// about 6% of a frame, but a `CubicTo` counts as one verb whatever it
-/// flattens into, and 4096 long cubics cost five frames. How to weight curve
-/// verbs is open in that contract.
-pub const MAX_DRAW_PATH_VERBS: usize = 16_384;
+/// **Segments, not verbs.** A `LineTo` or a `Close` is one segment. A curve
+/// is the number of segments the interpreter cuts it into: [`curve_segments`]
+/// at [`CURVE_TOLERANCE`], under the scale of the transforms pushed around
+/// it. The bound used to count verbs, and a `CubicTo` counted as one verb
+/// whatever it flattened into: 4096 long cubics cost five frames
+/// (`contracts/draw-list.md` §5, measured 2026-11-11). 16384 straight
+/// segments paint and tessellate in about 6% of a frame, and that is now
+/// what the bound admits whatever the verbs are.
+pub const MAX_DRAW_PATH_SEGMENTS: usize = 16_384;
+
+/// How far, in canvas logical units under the pushed transforms, a flattened
+/// curve may sit off the true curve.
+///
+/// A twentieth of a unit: a tenth of a device pixel at scale 2, the same
+/// tenth the ellipse sagitta uses, and finer at scale 1. In logical units
+/// rather than pixels so a list's segment count, which the bound is checked
+/// against, does not depend on the display it lands on.
+pub const CURVE_TOLERANCE: f32 = 0.05;
+
+/// How many straight segments `verb`, drawn from `from` under a transform
+/// that scales by `scale`, flattens into. `1` for a `LineTo` and a `Close`,
+/// `0` for a `MoveTo`.
+///
+/// A curve is cut into `n` equal steps in its parameter, `n` the least that
+/// keeps every chord within [`CURVE_TOLERANCE`] of the curve. Uniform
+/// subdivision of a polynomial curve strays at most `max|B''| / (8 n²)`, and
+/// `max|B''|` is a bound read straight off the control points: `6 M` for a
+/// cubic, `M` the larger of `|P0 - 2 P1 + P2|` and `|P1 - 2 P2 + P3|`, and
+/// `2 |P0 - 2 P1 + P2|` for a quadratic. Scaling the axes scales those
+/// second differences, so the count is taken on scaled differences and a
+/// pushed zoom pays for the detail it shows. Translation cancels.
+///
+/// [`DrawList::new`] sums this against [`MAX_DRAW_PATH_SEGMENTS`] and the
+/// interpreter flattens into exactly this many segments, so the bound is the
+/// cost. Saturates at one past the bound, so a curve of absurd size is
+/// refused rather than overflowing; a curve with a non-finite point is one
+/// segment, which draws nothing an interpreter can see.
+#[must_use]
+pub fn curve_segments(verb: &PathVerb, from: Point, scale: [f32; 2]) -> usize {
+    let second = |a: Point, b: Point, c: Point| {
+        let dx = f64::from(a.x) - 2.0 * f64::from(b.x) + f64::from(c.x);
+        let dy = f64::from(a.y) - 2.0 * f64::from(b.y) + f64::from(c.y);
+        (dx * f64::from(scale[0])).hypot(dy * f64::from(scale[1]))
+    };
+    // Stray bound per unit of `1 / n²`.
+    let stray = match *verb {
+        PathVerb::MoveTo(_) => return 0,
+        PathVerb::LineTo(_) | PathVerb::Close => return 1,
+        PathVerb::QuadTo { ctrl, to } => second(from, ctrl, to) / 4.0,
+        PathVerb::CubicTo { c1, c2, to } => 0.75 * second(from, c1, c2).max(second(c1, c2, to)),
+    };
+    let n = (stray / f64::from(CURVE_TOLERANCE)).sqrt().ceil();
+    if !n.is_finite() && !n.is_nan() {
+        return MAX_DRAW_PATH_SEGMENTS + 1;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n = n.min((MAX_DRAW_PATH_SEGMENTS + 1) as f64) as usize;
+    n.max(1)
+}
 
 /// A colour a command paints with.
 ///
@@ -316,8 +369,8 @@ impl Fit {
 ///
 /// No arc verb: `epaint` has no arc shape, so an arc would have to be
 /// converted to cubics somewhere, and doing it at authoring time keeps the
-/// verb count — which [`MAX_DRAW_PATH_VERBS`] bounds — a number the author
-/// can see (§2). [`arc_verbs`] is that conversion.
+/// segment count — which [`MAX_DRAW_PATH_SEGMENTS`] bounds — a number the
+/// author can compute (§2). [`arc_verbs`] is that conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PathVerb {
@@ -360,6 +413,30 @@ impl PathVerb {
             Self::QuadTo { ctrl, to } => vec![ctrl, to],
             Self::CubicTo { c1, c2, to } => vec![c1, c2, to],
             Self::Close => Vec::new(),
+        }
+    }
+
+    /// The first point this verb names: where a curve with no point before
+    /// it is drawn from, as the interpreter draws it. `None` for `Close`.
+    #[must_use]
+    pub fn first(self) -> Option<Point> {
+        match self {
+            Self::MoveTo(p) | Self::LineTo(p) => Some(p),
+            Self::QuadTo { ctrl, .. } => Some(ctrl),
+            Self::CubicTo { c1, .. } => Some(c1),
+            Self::Close => None,
+        }
+    }
+
+    /// Where the pen is after this verb. `None` for `Close`, which leaves the
+    /// last point drawn as the point the next segment starts from: the
+    /// command's `closed` flag, not this verb, draws the closing edge.
+    #[must_use]
+    pub fn end(self) -> Option<Point> {
+        match self {
+            Self::MoveTo(p) | Self::LineTo(p) => Some(p),
+            Self::QuadTo { to, .. } | Self::CubicTo { to, .. } => Some(to),
+            Self::Close => None,
         }
     }
 
@@ -552,9 +629,9 @@ pub enum DrawListError {
         /// The bound it exceeded.
         limit: usize,
     },
-    /// More path verbs, summed over every `Path`, than
-    /// [`MAX_DRAW_PATH_VERBS`].
-    TooManyPathVerbs {
+    /// More flattened path segments, summed over every `Path`, than
+    /// [`MAX_DRAW_PATH_SEGMENTS`].
+    TooManyPathSegments {
         /// How many the list carried in total.
         found: usize,
         /// The bound it exceeded.
@@ -602,10 +679,11 @@ impl std::fmt::Display for DrawListError {
                  (MAX_DRAW_COMMANDS)",
                 found - limit
             ),
-            Self::TooManyPathVerbs { found, limit } => write!(
+            Self::TooManyPathSegments { found, limit } => write!(
                 f,
-                "a draw list carries {found} path verbs, {} over the {limit} a canvas may hold \
-                 (MAX_DRAW_PATH_VERBS)",
+                "a draw list's paths flatten into {found} segments, {} over the {limit} a \
+                 canvas may hold (MAX_DRAW_PATH_SEGMENTS); a curve counts the segments \
+                 curve_segments cuts it into",
                 found - limit
             ),
             Self::UnmatchedPop { index } => write!(
@@ -650,10 +728,14 @@ impl std::error::Error for DrawListError {}
 #[serde(into = "Wire")]
 pub struct DrawList {
     commands: Vec<Command>,
-    /// Summed over every `Path`, computed once at construction. Read by the
-    /// digest's cost accounting and by tests; never recomputed, so it cannot
-    /// disagree with what the bound was checked against.
+    /// Summed over every `Path`, computed once at construction. Read by
+    /// tests and the gallery; never recomputed, so it cannot disagree with
+    /// what the bound was checked against.
     path_verbs: usize,
+    /// Flattened segments summed over every `Path` ([`curve_segments`]),
+    /// computed once at construction: the number the bound was checked
+    /// against.
+    path_segments: usize,
 }
 
 /// The wire shape of a [`DrawList`]: a version and a command vector.
@@ -706,17 +788,11 @@ impl DrawList {
                 limit: MAX_DRAW_COMMANDS,
             });
         }
-        let path_verbs: usize = commands
-            .iter()
-            .map(|c| match c {
-                Command::Path { verbs, .. } => verbs.len(),
-                _ => 0,
-            })
-            .sum();
-        if path_verbs > MAX_DRAW_PATH_VERBS {
-            return Err(DrawListError::TooManyPathVerbs {
-                found: path_verbs,
-                limit: MAX_DRAW_PATH_VERBS,
+        let (path_verbs, path_segments) = count_paths(&commands);
+        if path_segments > MAX_DRAW_PATH_SEGMENTS {
+            return Err(DrawListError::TooManyPathSegments {
+                found: path_segments,
+                limit: MAX_DRAW_PATH_SEGMENTS,
             });
         }
         let mut depth = 0_usize;
@@ -742,6 +818,7 @@ impl DrawList {
         Ok(Self {
             commands,
             path_verbs,
+            path_segments,
         })
     }
 
@@ -803,6 +880,13 @@ impl DrawList {
     #[must_use]
     pub fn path_verbs(&self) -> usize {
         self.path_verbs
+    }
+
+    /// How many straight segments the list's paths flatten into, summed over
+    /// every `Path`: the number [`MAX_DRAW_PATH_SEGMENTS`] bounds.
+    #[must_use]
+    pub fn path_segments(&self) -> usize {
+        self.path_segments
     }
 
     /// Whether any command draws a registered asset.
@@ -873,6 +957,44 @@ impl DrawList {
 /// Collinear points are allowed: a cross product of zero is a straight run,
 /// not a reversal, and refusing it would reject every rectangle written as a
 /// path.
+/// The verbs and the flattened segments over every `Path` in `commands`.
+///
+/// Walks the `Push` stack for the scale each path is drawn under. Tolerant of
+/// an unbalanced stack, which the balance check reports next: the counts are
+/// checked first so one malformed list always reports the same problem.
+fn count_paths(commands: &[Command]) -> (usize, usize) {
+    let mut scales: Vec<[f32; 2]> = vec![[1.0, 1.0]];
+    let (mut verbs_seen, mut segments) = (0_usize, 0_usize);
+    for command in commands {
+        let top = *scales.last().unwrap_or(&[1.0, 1.0]);
+        match command {
+            Command::Push { transform, .. } => {
+                let pushed = transform.map_or(top, |t| [top[0] * t.sx, top[1] * t.sy]);
+                scales.push(pushed);
+            }
+            Command::Pop => {
+                if scales.len() > 1 {
+                    scales.pop();
+                }
+            }
+            Command::Path { verbs, .. } => {
+                verbs_seen += verbs.len();
+                let scale = [top[0].abs(), top[1].abs()];
+                let mut last: Option<Point> = None;
+                for verb in verbs {
+                    let from = last.or(verb.first()).unwrap_or(Point::new(0.0, 0.0));
+                    segments = segments.saturating_add(curve_segments(verb, from, scale));
+                    if let Some(end) = verb.end() {
+                        last = Some(end);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (verbs_seen, segments)
+}
+
 fn check_convex(index: usize, verbs: &[PathVerb]) -> Result<(), DrawListError> {
     let points: Vec<Point> = verbs.iter().flat_map(|v| v.points()).collect();
     if points.len() < 3 {
@@ -916,8 +1038,9 @@ fn check_convex(index: usize, verbs: &[PathVerb]) -> Result<(), DrawListError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Affine, AssetRef, ColorRef, Command, Corners, DrawList, DrawListError, Fit,
-        MAX_DRAW_COMMANDS, MAX_DRAW_PATH_VERBS, Paint, PathVerb, Stroke, VERSION, Width,
+        Affine, AssetRef, CURVE_TOLERANCE, ColorRef, Command, Corners, DrawList, DrawListError,
+        Fit, MAX_DRAW_COMMANDS, MAX_DRAW_PATH_SEGMENTS, Paint, PathVerb, Stroke, VERSION, Width,
+        curve_segments,
     };
     use crate::geom::{Point, Rect, Scale, Size};
 
@@ -993,7 +1116,7 @@ mod tests {
         // times the budget `contracts/draw-list.md` §5 allows. Changing these
         // two lines is allowed; changing them silently is not.
         assert_eq!(MAX_DRAW_COMMANDS, 4096);
-        assert_eq!(MAX_DRAW_PATH_VERBS, 16_384);
+        assert_eq!(MAX_DRAW_PATH_SEGMENTS, 16_384);
 
         let over = vec![box_command(); MAX_DRAW_COMMANDS + 7];
         let err = DrawList::new(over).unwrap_err();
@@ -1014,8 +1137,8 @@ mod tests {
     }
 
     #[test]
-    fn draw_budget_refuses_too_many_path_verbs_by_name_and_amount() {
-        let verbs = vec![PathVerb::LineTo(Point::new(1.0, 1.0)); MAX_DRAW_PATH_VERBS / 2 + 3];
+    fn draw_budget_refuses_too_many_path_segments_by_name_and_amount() {
+        let verbs = vec![PathVerb::LineTo(Point::new(1.0, 1.0)); MAX_DRAW_PATH_SEGMENTS / 2 + 3];
         let one = Command::Path {
             verbs: verbs.clone(),
             closed: false,
@@ -1027,22 +1150,23 @@ mod tests {
         let err = DrawList::new(vec![one.clone(), one]).unwrap_err();
         assert_eq!(
             err,
-            DrawListError::TooManyPathVerbs {
-                found: MAX_DRAW_PATH_VERBS + 6,
-                limit: MAX_DRAW_PATH_VERBS,
+            DrawListError::TooManyPathSegments {
+                found: MAX_DRAW_PATH_SEGMENTS + 6,
+                limit: MAX_DRAW_PATH_SEGMENTS,
             }
         );
         let shown = err.to_string();
-        assert!(shown.contains("MAX_DRAW_PATH_VERBS"), "{shown}");
+        assert!(shown.contains("MAX_DRAW_PATH_SEGMENTS"), "{shown}");
         assert!(shown.contains("6 over"), "names the overage: {shown}");
     }
 
-    /// The verb bound sums across `Path`s rather than applying per command:
-    /// two paths of half the bound each are over it, and a list that only
-    /// checked one command at a time would accept them.
+    /// The segment bound sums across `Path`s rather than applying per
+    /// command: two paths of half the bound each are at it, three are over
+    /// it, and a list that only checked one command at a time would accept
+    /// them.
     #[test]
-    fn draw_budget_sums_path_verbs_across_commands() {
-        let half = vec![PathVerb::LineTo(Point::new(1.0, 1.0)); MAX_DRAW_PATH_VERBS / 2];
+    fn draw_budget_sums_path_segments_across_commands() {
+        let half = vec![PathVerb::LineTo(Point::new(1.0, 1.0)); MAX_DRAW_PATH_SEGMENTS / 2];
         let one = Command::Path {
             verbs: half,
             closed: false,
@@ -1054,7 +1178,135 @@ mod tests {
         assert!(DrawList::new(vec![one.clone()]).is_ok());
         assert!(DrawList::new(vec![one.clone(), one.clone()]).is_ok());
         let three = DrawList::new(vec![one.clone(), one.clone(), one]);
-        assert!(matches!(three, Err(DrawListError::TooManyPathVerbs { .. })));
+        assert!(matches!(
+            three,
+            Err(DrawListError::TooManyPathSegments { .. })
+        ));
+    }
+
+    fn cubic_path(verbs: Vec<PathVerb>) -> Command {
+        Command::Path {
+            verbs,
+            closed: false,
+            paint: Paint::stroked(Stroke {
+                width: Width::Logical(1.0),
+                color: red(),
+            }),
+        }
+    }
+
+    /// The `contracts/draw-list.md` §5 hole, closed: a list of long cubics
+    /// that the verb bound admitted at 4096 verbs costs what its flattened
+    /// segments cost, and is refused when those pass the bound. The same
+    /// verbs under a pushed 4x zoom cost more, because the zoom shows detail
+    /// the flattening has to draw.
+    #[test]
+    fn long_cubics_are_counted_by_the_segments_they_flatten_into() {
+        // The bench's stroked cubic: each one swings the full 1024 canvas.
+        let swing = |n: usize| {
+            let step = 1024.0 / n as f32;
+            let mut verbs = vec![PathVerb::MoveTo(Point::new(0.0, 512.0))];
+            verbs.extend((1..n).map(|i| {
+                let x = i as f32 * step;
+                PathVerb::CubicTo {
+                    c1: Point::new(x - step * 0.66, 0.0),
+                    c2: Point::new(x - step * 0.33, 1024.0),
+                    to: Point::new(x, 512.0),
+                }
+            }));
+            verbs
+        };
+        let err = DrawList::new(vec![cubic_path(swing(4096))]).unwrap_err();
+        assert!(
+            matches!(err, DrawListError::TooManyPathSegments { found, .. } if found > 4096 * 100),
+            "{err}"
+        );
+
+        let fits = DrawList::new(vec![cubic_path(swing(64))]).expect("64 cubics fit");
+        assert!(fits.path_segments() > 64 * 100, "{}", fits.path_segments());
+        assert!(fits.path_segments() <= MAX_DRAW_PATH_SEGMENTS);
+
+        let zoomed = DrawList::new(vec![
+            Command::Push {
+                transform: Some(Affine {
+                    tx: 0.0,
+                    ty: 0.0,
+                    sx: 4.0,
+                    sy: 4.0,
+                }),
+                clip: None,
+                opacity: None,
+            },
+            cubic_path(swing(16)),
+            Command::Pop,
+        ])
+        .expect("16 cubics fit under a 4x zoom");
+        let flat = DrawList::new(vec![cubic_path(swing(16))]).expect("16 cubics fit");
+        // A 4x zoom quadruples the second differences, so each curve takes
+        // twice the steps, give or take its own rounding up.
+        let (z, f) = (zoomed.path_segments(), flat.path_segments());
+        assert!(
+            z + 15 >= 2 * f && z <= 2 * f + 15,
+            "zoomed {z} against flat {f}"
+        );
+    }
+
+    /// The segment count is the least uniform subdivision that holds the
+    /// tolerance: sampled densely, every chord of `n` steps stays within
+    /// [`CURVE_TOLERANCE`] of the curve, and `n - 1` steps do not, on a
+    /// curve where the bound is tight (a parabola, whose second derivative
+    /// is constant).
+    #[test]
+    fn a_curve_flattens_into_the_fewest_segments_that_hold_the_tolerance() {
+        let from = Point::new(0.0, 0.0);
+        let quad = PathVerb::QuadTo {
+            ctrl: Point::new(50.0, 80.0),
+            to: Point::new(100.0, 0.0),
+        };
+        let n = curve_segments(&quad, from, [1.0, 1.0]);
+        let at = |t: f32| {
+            let u = 1.0 - t;
+            Point::new(2.0 * u * t * 50.0 + t * t * 100.0, 2.0 * u * t * 80.0)
+        };
+        let worst = |n: usize| {
+            let mut worst = 0.0_f32;
+            for i in 0..n {
+                let (t0, t1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+                let (a, b) = (at(t0), at(t1));
+                for k in 0..=64 {
+                    let t = t0 + (t1 - t0) * k as f32 / 64.0;
+                    let p = at(t);
+                    let s = k as f32 / 64.0;
+                    let chord = Point::new(a.x + (b.x - a.x) * s, a.y + (b.y - a.y) * s);
+                    worst = worst.max((p.x - chord.x).hypot(p.y - chord.y));
+                }
+            }
+            worst
+        };
+        assert!(
+            worst(n) <= CURVE_TOLERANCE * 1.01,
+            "n={n} strays {}",
+            worst(n)
+        );
+        assert!(worst(n - 1) > CURVE_TOLERANCE, "n-1={} holds too", n - 1);
+
+        // Straight verbs are one segment, a move is none, and a degenerate
+        // curve still draws one.
+        assert_eq!(curve_segments(&PathVerb::MoveTo(from), from, [1.0, 1.0]), 0);
+        assert_eq!(curve_segments(&PathVerb::LineTo(from), from, [1.0, 1.0]), 1);
+        assert_eq!(curve_segments(&PathVerb::Close, from, [1.0, 1.0]), 1);
+        let flat = PathVerb::CubicTo {
+            c1: Point::new(1.0, 0.0),
+            c2: Point::new(2.0, 0.0),
+            to: Point::new(3.0, 0.0),
+        };
+        assert_eq!(curve_segments(&flat, from, [1.0, 1.0]), 1);
+        // A curve too large to count is refused, never wrapped.
+        let huge = PathVerb::QuadTo {
+            ctrl: Point::new(0.0, 3e38),
+            to: Point::new(0.0, 0.0),
+        };
+        assert!(curve_segments(&huge, from, [1.0, 1.0]) > MAX_DRAW_PATH_SEGMENTS);
     }
 
     /// T124: a non-convex filled path is refused by name. Not degraded, not

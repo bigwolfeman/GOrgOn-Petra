@@ -1,7 +1,7 @@
 //! What one canvas costs at the draw-list bounds (`contracts/draw-list.md`
 //! §5, spec 005 task T169).
 //!
-//! `MAX_DRAW_COMMANDS = 4096` and `MAX_DRAW_PATH_VERBS = 16384` were reasoned,
+//! `MAX_DRAW_COMMANDS = 4096` and `MAX_DRAW_PATH_SEGMENTS = 16384` were reasoned,
 //! not measured. A bound is right when the most expensive list it admits
 //! still fits a frame with room for everything else on screen, and wrong in
 //! the other direction when it refuses lists that would have been cheap. So
@@ -29,8 +29,8 @@ use std::time::{Duration, Instant};
 
 use egui::Color32;
 use gorgon_petra::draw::{
-    ColorRef, Command, Corners, DrawList, MAX_DRAW_COMMANDS, MAX_DRAW_PATH_VERBS, Paint, PathVerb,
-    Stroke, Width,
+    ColorRef, Command, Corners, DrawList, MAX_DRAW_COMMANDS, MAX_DRAW_PATH_SEGMENTS, Paint,
+    PathVerb, Stroke, Width,
 };
 use gorgon_petra::frame::digest::hash_draw_list;
 use gorgon_petra::geom::{Point, Rect, Scale};
@@ -226,7 +226,7 @@ fn row(label: &str, n: usize, cost: &Result<Cost, String>) {
 
 fn main() {
     println!(
-        "bounds: MAX_DRAW_COMMANDS = {MAX_DRAW_COMMANDS}, MAX_DRAW_PATH_VERBS = {MAX_DRAW_PATH_VERBS}; \
+        "bounds: MAX_DRAW_COMMANDS = {MAX_DRAW_COMMANDS}, MAX_DRAW_PATH_SEGMENTS = {MAX_DRAW_PATH_SEGMENTS}; \
          median of {REPS}; times in µs"
     );
     println!(
@@ -241,8 +241,25 @@ fn main() {
         ("stroked cubics", cubics),
         ("filled convex polygon", convex),
     ] {
-        for n in [1024, 4096, MAX_DRAW_PATH_VERBS] {
+        for n in [1024, 4096, MAX_DRAW_PATH_SEGMENTS] {
             row(label, n, &measure(&build(n)));
         }
     }
+    // The most of the bench's long cubics the segment bound admits: the
+    // expensive end of what the bound lets a curve-heavy list do.
+    let (mut fits, mut over) = (2, MAX_DRAW_PATH_SEGMENTS);
+    while over - fits > 1 {
+        let mid = (fits + over) / 2;
+        if DrawList::new(cubics(mid)).is_ok() {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    let admitted = fits;
+    row(
+        "stroked cubics, most admitted",
+        admitted,
+        &measure(&cubics(admitted)),
+    );
 }

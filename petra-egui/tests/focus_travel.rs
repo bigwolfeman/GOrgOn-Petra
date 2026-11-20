@@ -1,9 +1,11 @@
 //! A Tab whose target is off screen scrolls toward it, and focus lands when
 //! the scroll arrives.
 //!
-//! The scroll is a set of running position transitions (a shipped button
-//! declares `button-press`), so the target is still off screen on the pass
-//! that handled the key. These tests drive the production path
+//! The scroll is a running position transition (the scrolled list declares
+//! [`GLIDE`], and its buttons ride on it), so the target is still off screen
+//! on the pass that handled the key. A shipped button's `button-press` used to
+//! supply that motion by sliding every button on any layout move; it animates
+//! only a press now, so the fixture declares the travel it needs. These tests drive the production path
 //! (`Host::pass` -> `step_focus` -> the landing in `pass`) through a vertical
 //! `Scroll` with a 100 tall viewport that holds button A, 300 points of
 //! nothing, then button B. The gap is larger than the viewport, so scrolling
@@ -14,6 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use egui::{Context, Event, Key, Modifiers, RawInput};
+use gorgon_petra::anim::curve::{CubicBezier, Curve};
+use gorgon_petra::anim::{PropertyKind, Timing, TransitionDef, TransitionRegistry};
 use gorgon_petra::component;
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::Axis;
@@ -27,6 +31,23 @@ use gorgon_petra_egui::testing::{boot, step};
 const TICK: f64 = 1.0 / 60.0;
 /// Passes a walk may take. The longest shipped transition is 140 ms, 9 passes.
 const BUDGET: usize = 60;
+/// The transition the scrolled list names: a 140 ms position curve.
+const GLIDE: &str = "glide";
+
+fn glide() -> TransitionRegistry {
+    let mut registry = TransitionRegistry::new();
+    registry.register(
+        GLIDE,
+        TransitionDef::builder()
+            .drive(
+                PropertyKind::Position,
+                Timing::Curve(Curve::new(0.14, CubicBezier::new(0.0, 0.0, 0.38, 0.9)).unwrap()),
+            )
+            .build()
+            .unwrap(),
+    );
+    registry
+}
 
 struct Travel {
     /// Whether button B is in the tree.
@@ -57,6 +78,7 @@ impl App for Travel {
                 axis: Some(Axis::Vertical),
                 ..Props::default()
             })
+            .with_transition(GLIDE)
             .child(component::button("a", "A"))
             .child(ViewNode::new(NodeKind::Spacer, "gap").with_constraints(fixed(300.0)));
         if self.with_b {
@@ -87,7 +109,8 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        let (ctx, host) = boot(Travel { with_b: true });
+        let (ctx, mut host) = boot(Travel { with_b: true });
+        host.set_transitions(glide());
         let mut rig = Self {
             ctx,
             host,

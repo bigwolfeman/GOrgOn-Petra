@@ -211,6 +211,14 @@ pub struct PlacementSemantics {
     /// without knowing the key path the list was mounted at. Not a digest
     /// input: it decides no pixel, and the rows it names are hashed as rows.
     pub row_source: Option<String>,
+    /// The index of the first row a collection materialized this frame;
+    /// `None` on every other node and on a collection that placed no row.
+    ///
+    /// The k-th row child of a collection is row `first_row + k`, which is
+    /// how a reveal finds a placed row by index without reading positions
+    /// back through the estimate. Not a digest input, on `row_source`'s
+    /// terms: the rows are hashed as rows.
+    pub first_row: Option<usize>,
     /// The axis a two-axis `scroll` also scrolls across
     /// ([`crate::tree::Props::cross_scroll`]); `None` on every other node.
     ///

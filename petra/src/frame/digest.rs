@@ -215,10 +215,84 @@ impl std::fmt::Display for FrameDigest {
 /// poisoning a frame's identity with `NaN`.
 #[must_use]
 pub fn canonical_decimal(value: f32) -> String {
-    if !value.is_finite() || value == 0.0 {
-        return "0".into();
+    Decimal::of(value).as_str().to_owned()
+}
+
+/// [`canonical_decimal`]'s text, on the stack.
+///
+/// The digest prints one decimal per float, and a draw list carries up to
+/// [`crate::draw::MAX_DRAW_PATH_SEGMENTS`] points of them. A `String` per
+/// float was most of `hash_draw_list`'s cost (`contracts/draw-list.md` §5),
+/// so the canonical writer formats into this buffer instead. The text is
+/// byte for byte what [`canonical_decimal`] returns, so no digest moves.
+struct Decimal {
+    buf: [u8; Self::CAP],
+    len: usize,
+}
+
+impl Decimal {
+    /// Longer than any `f32` `Display` prints: the longest, the smallest
+    /// subnormal with its sign, is 48 bytes.
+    const CAP: usize = 64;
+
+    fn of(value: f32) -> Self {
+        let mut out = Self {
+            buf: [0; Self::CAP],
+            len: 0,
+        };
+        if !value.is_finite() || value == 0.0 {
+            out.push(b'0');
+        } else if value.fract() == 0.0 && value.abs() < 16_777_216.0 {
+            // Integral and exact: `Display` prints the bare integer, which a
+            // digit loop produces without the float formatter.
+            #[allow(clippy::cast_possible_truncation)]
+            let int = value as i32;
+            if int < 0 {
+                out.push(b'-');
+            }
+            let mut digits = [0u8; 8];
+            let mut n = int.unsigned_abs();
+            let mut at = digits.len();
+            loop {
+                at -= 1;
+                #[allow(clippy::cast_possible_truncation)]
+                let digit = (n % 10) as u8;
+                digits[at] = b'0' + digit;
+                n /= 10;
+                if n == 0 {
+                    break;
+                }
+            }
+            for &d in &digits[at..] {
+                out.push(d);
+            }
+        } else {
+            use std::fmt::Write as _;
+            write!(out, "{value}").expect("an f32 prints in under 64 bytes");
+        }
+        out
     }
-    format!("{value}")
+
+    fn push(&mut self, byte: u8) {
+        self.buf[self.len] = byte;
+        self.len += 1;
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).expect("decimal text is ASCII")
+    }
+}
+
+impl std::fmt::Write for Decimal {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len + s.len();
+        if end > Self::CAP {
+            return Err(std::fmt::Error);
+        }
+        self.buf[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
 }
 
 /// A 64-bit content hash of a text run, for the digest's paint-state field.
@@ -343,10 +417,10 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         }) => {
             w.bool(true);
             w.text(side.as_str());
-            w.text(&canonical_decimal(*tip_x));
-            w.text(&canonical_decimal(*tip_y));
-            w.text(&canonical_decimal(*base));
-            w.text(&canonical_decimal(*depth));
+            w.decimal(*tip_x);
+            w.decimal(*tip_y);
+            w.decimal(*base);
+            w.decimal(*depth);
         }
         None => w.bool(false),
     }
@@ -426,7 +500,7 @@ pub fn hash_draw_list(list: &DrawList) -> u64 {
                     Some(Affine { tx, ty, sx, sy }) => {
                         w.bool(true);
                         for v in [tx, ty, sx, sy] {
-                            w.text(&canonical_decimal(*v));
+                            w.decimal(*v);
                         }
                     }
                     None => w.bool(false),
@@ -441,7 +515,7 @@ pub fn hash_draw_list(list: &DrawList) -> u64 {
                 match opacity {
                     Some(v) => {
                         w.bool(true);
-                        w.text(&canonical_decimal(*v));
+                        w.decimal(*v);
                     }
                     None => w.bool(false),
                 }
@@ -461,7 +535,7 @@ pub fn hash_draw_list(list: &DrawList) -> u64 {
             } => {
                 hash_logical_rect(&mut w, *rect);
                 for v in [top_left, top_right, bottom_right, bottom_left] {
-                    w.text(&canonical_decimal(*v));
+                    w.decimal(*v);
                 }
                 w.bool(*snap);
                 hash_paint(&mut w, paint);
@@ -471,10 +545,10 @@ pub fn hash_draw_list(list: &DrawList) -> u64 {
                 radii,
                 paint,
             } => {
-                w.text(&canonical_decimal(center.x));
-                w.text(&canonical_decimal(center.y));
-                w.text(&canonical_decimal(radii.w));
-                w.text(&canonical_decimal(radii.h));
+                w.decimal(center.x);
+                w.decimal(center.y);
+                w.decimal(radii.w);
+                w.decimal(radii.h);
                 hash_paint(&mut w, paint);
             }
             Command::Path {
@@ -490,19 +564,19 @@ pub fn hash_draw_list(list: &DrawList) -> u64 {
                     // therefore a different picture.
                     match verb {
                         PathVerb::MoveTo(p) | PathVerb::LineTo(p) => {
-                            w.text(&canonical_decimal(p.x));
-                            w.text(&canonical_decimal(p.y));
+                            w.decimal(p.x);
+                            w.decimal(p.y);
                         }
                         PathVerb::QuadTo { ctrl, to } => {
                             for p in [ctrl, to] {
-                                w.text(&canonical_decimal(p.x));
-                                w.text(&canonical_decimal(p.y));
+                                w.decimal(p.x);
+                                w.decimal(p.y);
                             }
                         }
                         PathVerb::CubicTo { c1, c2, to } => {
                             for p in [c1, c2, to] {
-                                w.text(&canonical_decimal(p.x));
-                                w.text(&canonical_decimal(p.y));
+                                w.decimal(p.x);
+                                w.decimal(p.y);
                             }
                         }
                         PathVerb::Close => {}
@@ -542,7 +616,7 @@ pub fn hash_draw_list(list: &DrawList) -> u64 {
 /// A canvas-local rect, four canonical decimals, unrounded.
 fn hash_logical_rect(w: &mut Canonical, rect: crate::geom::Rect) {
     for v in [rect.x, rect.y, rect.w, rect.h] {
-        w.text(&canonical_decimal(v));
+        w.decimal(v);
     }
 }
 
@@ -557,7 +631,7 @@ fn hash_paint(w: &mut Canonical, paint: &Paint) {
                 Width::Device(v) => ("device", v),
             };
             w.text(kind);
-            w.text(&canonical_decimal(*value));
+            w.decimal(*value);
             hash_color(w, Some(color));
         }
         None => w.bool(false),
@@ -655,6 +729,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 actions: _,
                 total_count: _,
                 row_source: _,
+                first_row: _,
                 cross_axis: _,
                 // These two decide what the focus indicator looks like
                 // and which rect it is drawn on. Both are held out the way
@@ -732,7 +807,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
     w.i32(clip.y);
     w.i32(clip.w);
     w.i32(clip.h);
-    w.text(&canonical_decimal(*opacity));
+    w.decimal(*opacity);
     w.u64(*content_hash);
     w.bool(*truncated);
     w.bool(*overflowed);
@@ -987,9 +1062,9 @@ pub fn root_hash_from(subtree_hashes: &[[u8; 32]]) -> [u8; 32] {
 pub fn frame_bytes(viewport: &Viewport, root_hash: [u8; 32]) -> Vec<u8> {
     let mut w = Canonical::new();
     w.bytes(DOMAIN);
-    w.text(&canonical_decimal(viewport.size.w));
-    w.text(&canonical_decimal(viewport.size.h));
-    w.text(&canonical_decimal(viewport.scale.factor()));
+    w.decimal(viewport.size.w);
+    w.decimal(viewport.size.h);
+    w.decimal(viewport.scale.factor());
     w.u64(viewport.theme_rev);
     w.text(viewport.theme_mode.as_str());
     w.bytes(&root_hash);
@@ -1033,6 +1108,11 @@ impl Canonical {
 
     fn text(&mut self, value: &str) {
         self.bytes(value.as_bytes());
+    }
+
+    /// A float as its [`canonical_decimal`] text, without allocating it.
+    fn decimal(&mut self, value: f32) {
+        self.text(Decimal::of(value).as_str());
     }
 
     /// An optional string as a presence flag followed by the value.
@@ -1316,6 +1396,7 @@ mod tests {
                 actions: vec![Interaction::Click],
                 total_count: Some(9),
                 row_source: Some("fibers".into()),
+                first_row: Some(3),
                 cross_axis: None,
                 // Non-default on purpose, like the flags above: the pinned
                 // vectors below prove these two are held out of the leaf
@@ -2070,6 +2151,44 @@ mod tests {
         assert_eq!(canonical_decimal(-3.5), "-3.5");
         for v in [0.1_f32, 1.0 / 3.0, 1e-7, 12345.678] {
             assert_eq!(canonical_decimal(v).parse::<f32>().unwrap(), v);
+        }
+    }
+
+    /// The stack formatter prints exactly what `Display` prints, so moving
+    /// the digest onto it moved no digest. Swept over integral values either
+    /// side of the 2^24 exact-integer edge, fractions, subnormals and the
+    /// extremes, at both signs.
+    #[test]
+    fn the_stack_decimal_is_the_display_decimal() {
+        let mut values = vec![
+            f32::MIN_POSITIVE,
+            f32::from_bits(1),
+            f32::MAX,
+            16_777_215.0,
+            16_777_216.0,
+            16_777_218.0,
+            1e-45,
+            0.5,
+            1.0,
+            10.0,
+            1e7,
+            1e20,
+        ];
+        let mut bits: u32 = 0x9E37_79B9;
+        for _ in 0..20_000 {
+            bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            values.push(f32::from_bits(bits));
+        }
+        values.extend((-2000..2000).map(|i| i as f32 * 0.25));
+        for v in values {
+            for v in [v, -v] {
+                let want = if !v.is_finite() || v == 0.0 {
+                    "0".to_owned()
+                } else {
+                    format!("{v}")
+                };
+                assert_eq!(canonical_decimal(v), want, "bits {:#010x}", v.to_bits());
+            }
         }
     }
 

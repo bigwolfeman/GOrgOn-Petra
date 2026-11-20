@@ -41,26 +41,27 @@
 //! under a `stack`'s id cannot be mistaken for one.
 //!
 //! # What `estimated_extent` governs, and what it cannot break
-//! The estimate answers the two questions nothing has measured yet: how long
-//! the whole scrollable content is (`measure_collection`, which never fetches
-//! a row — FR-009), and which index the visible window starts at
-//! (`place_collection`). Both are about rows that were never materialized, so
-//! an estimate is the only answer either can have.
+//! The estimate is the extent of a row no frame has measured. Every row a
+//! frame places is measured and remembered in the host's
+//! [`crate::layout::RowExtents`], so the content extent (`measure_collection`,
+//! which never fetches a row — FR-009) and the window's first row
+//! (`place_collection`) are sums of measured extents where known and the
+//! estimate elsewhere ([`crate::layout::extents`]).
 //!
-//! Inside the window it is not used at all. Rows are placed by a cursor that
-//! advances by each row's own measured extent, so two placed rows are
-//! disjoint however wrong the estimate is. This used to be `index *
-//! estimated_extent` for the position and the measured extent for the size,
-//! and the two disagreeing is a real defect rather than a rounding one: the
-//! inspector's fiber list declared 28 for rows that measure 44, and every row
-//! was drawn 16 units on top of the row above it. That shipped, passed every
-//! frame-level test, and was found by looking at the picture.
+//! Inside the window rows sit at their own measured extents, so two placed
+//! rows are disjoint however wrong the estimate is. This used to be `index *
+//! estimated_extent` for the position and the measured extent for the size:
+//! the inspector's fiber list declared 28 for rows that measure 44, and every
+//! row was drawn 16 units on top of the row above it. That shipped, passed
+//! every frame-level test, and was found by looking at the picture. After
+//! that, the window's first row still sat on the estimate's grid, which made
+//! the end of a list of tall rows unreachable and jumped every visible row
+//! when a wheel step moved the window's first row; the ledger is what closed
+//! both.
 //!
-//! So a wrong estimate now costs a scroll range that is long or short, and a
-//! window whose last row runs past where the grid said it would — which is
-//! what `overscan` absorbs. It can no longer make rows collide. Content still
-//! wants an honest `estimated_extent`; it is no longer load-bearing for
-//! whether the list is legible.
+//! So a wrong estimate now costs a content extent that is wrong until the
+//! rows are seen, and one more fetch when the first guess at the window's
+//! last row falls short. Content still wants an honest `estimated_extent`.
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
@@ -410,7 +411,7 @@ fn collection_scroll(node: &ViewNode, ctx: &LayoutCtx<'_>) -> ScrollProps {
 pub fn measure_collection(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
-    _path: &mut KeyPath,
+    path: &mut KeyPath,
     proposal: SizeProposal,
 ) -> Size {
     let Some(collection) = node.props.collection() else {
@@ -423,13 +424,23 @@ pub fn measure_collection(
     let row_extent = sane_row_extent(collection.estimated_extent);
 
     // Rows are never fetched to answer a measurement (FR-009): the content
-    // extent is the declared total under the uniform-row assumption, not an
-    // observed one. A real per-row measurement here would mean walking every
-    // row just to answer a size probe, which is exactly what virtualization
-    // exists to avoid.
-    let content_extent = collection.total_count as f32 * row_extent;
+    // extent is what earlier frames measured, plus the estimate for every
+    // row no frame has placed ([`crate::layout::extents`]).
+    let content_extent = ctx.extents.content_extent(
+        &path.id(),
+        collection.total_count,
+        row_extent,
+        ctx.theme_rev,
+        ctx.scale,
+    );
     let cross = proposal.axis(axis.cross()).available().unwrap_or(0.0);
     Size::from_axes(axis, content_extent, cross)
+}
+
+/// The rows a collection materializes this frame, measured and positioned.
+struct Window {
+    first: usize,
+    rows: Vec<(std::sync::Arc<ViewNode>, Rect)>,
 }
 
 /// Place a `collection` node: only the visible window plus declared overscan
@@ -442,7 +453,11 @@ pub fn place_collection(
     sink: &mut dyn PlacementSink,
 ) {
     let id = path.id();
-    let semantics = semantics_of(node, &id, ctx.state);
+    let mut semantics = semantics_of(node, &id, ctx.state);
+    // Measured before the collection's own placement is pushed, so the
+    // placement can say which row its first child is.
+    let window = materialize(node, ctx, path, &id, slot);
+    semantics.first_row = window.as_ref().map(|w| w.first);
     let me = sink.push(Placement {
         id,
         kind: node.kind,
@@ -463,94 +478,175 @@ pub fn place_collection(
         parent: None,
     });
     sink.enter(me);
+    for (row_node, rect) in window.map(|w| w.rows).unwrap_or_default() {
+        // Inherit the scroll's viewport clip. Overscan rows sit outside it
+        // on purpose: they are placed so a later frame can scroll without a
+        // hole, and they are not visible, hittable, or Tab-reachable until
+        // they are.
+        crate::layout::place(&row_node, ctx, path, slot.with_rect(rect), sink);
+    }
+    sink.leave();
+}
 
-    if let Some(collection) = node.props.collection() {
-        let scroll = collection_scroll(node, ctx);
-        let axis = scroll.axis;
-        let row_extent = sane_row_extent(collection.estimated_extent);
-        let total_extent = collection.total_count as f32 * row_extent;
+/// Fetch, measure and position the rows of the window `slot` shows, and
+/// fold what they measured into the ledger.
+///
+/// The window is the viewport plus the scroll's overscan on each side. Its
+/// rows are found through the ledger ([`crate::layout::extents`]): measured
+/// extents where a frame has placed the row, the estimate elsewhere. The
+/// first visible row (the anchor) is placed where the ledger said it was at
+/// the start of this pass; rows after it follow at their measured extents,
+/// rows before it stack upward from it. So a measurement that differs from
+/// the ledger moves only rows the viewport does not show, and the distance
+/// the ledger moved the anchor goes to the enclosing scroll as a shift that
+/// keeps it there on the next frame.
+///
+/// More rows are fetched past the first guess until their measured extents
+/// cover the window, so rows shorter than the estimate leave no hole at the
+/// bottom, up to one row per unit of window so a list of empty rows stays
+/// virtualized.
+fn materialize(
+    node: &ViewNode,
+    ctx: &mut LayoutCtx<'_>,
+    path: &mut KeyPath,
+    id: &str,
+    slot: Slot,
+) -> Option<Window> {
+    let collection = node.props.collection()?;
+    let scroll = collection_scroll(node, ctx);
+    let scroll_id = ctx.enclosing_scroll().map(|frame| frame.id.clone());
+    let axis = scroll.axis;
+    let estimate = sane_row_extent(collection.estimated_extent);
+    let count = collection.total_count;
+    let cross_extent = slot.rect.size().across(axis);
 
-        // `slot.rect` is this node's own placement: for a collection that is
-        // the content-sized rect `measure_collection` answered (`place`
-        // above positions a child at `-offset` and only narrows `clip` to
-        // the viewport). The viewport is therefore `slot.clip` — the
-        // narrowest region an ancestor has clipped this subtree to, which is
-        // exactly the region a row can be seen in — never `slot.rect`.
-        let viewport_extent = slot.clip.size().along(axis).max(0.0);
+    // `slot.rect` is this node's own placement: for a collection that is
+    // the content-sized rect `measure_collection` answered (`place` above
+    // positions a child at `-offset` and only narrows `clip` to the
+    // viewport). The viewport is therefore `slot.clip` — the narrowest
+    // region an ancestor has clipped this subtree to, which is exactly the
+    // region a row can be seen in — never `slot.rect`.
+    let viewport_extent = slot.clip.size().along(axis).max(0.0);
+    // How far this list's own leading edge has been scrolled past the
+    // visible region. Every enclosing scroll already moved `slot.rect` by
+    // its offset, and every container in between already added its own
+    // leading content, so this one subtraction is the composed answer — see
+    // the module doc's "Where the offset comes from".
+    let offset = origin_along(slot.clip, axis) - origin_along(slot.rect, axis);
+    let origin = origin_along(slot.rect, axis);
 
-        // How far this list's own leading edge has been scrolled past the
-        // visible region. Every enclosing scroll already moved `slot.rect`
-        // by its offset, and every container in between already added its
-        // own leading content, so this one subtraction is the composed
-        // answer — see the module doc's "Where the offset comes from".
-        let offset = origin_along(slot.clip, axis) - origin_along(slot.rect, axis);
+    // The ledger as this pass found it: where the anchor is, and where every
+    // row the window starts from is.
+    let list = ctx
+        .extents
+        .open(id, estimate, cross_extent, ctx.theme_rev, ctx.scale, count);
+    let before = list.list().clone();
+    let total = before.total();
+    // A list scrolled entirely out of the visible region gets an empty
+    // window and materializes nothing, which is the honest answer: none of
+    // its rows can be seen.
+    let window_start = (offset - scroll.overscan).max(0.0);
+    let window_end = (offset + viewport_extent + scroll.overscan).min(total);
+    if count == 0 || window_end <= window_start {
+        return None;
+    }
+    let anchor = before.index_at(offset.max(0.0));
+    let anchor_at = before.prefix(anchor);
+    let start = before.index_at(window_start).min(anchor);
+    let budget = (window_end - window_start).ceil() as usize + 1;
 
-        // A list scrolled entirely out of the visible region gets an empty
-        // window (`window_end <= window_start`) and materializes nothing,
-        // which is the honest answer: none of its rows can be seen.
-        let window_start = (offset - scroll.overscan).max(0.0);
-        let window_end = (offset + viewport_extent + scroll.overscan).min(total_extent);
-
-        if collection.total_count > 0 && window_end > window_start {
-            let start_index =
-                ((window_start / row_extent).floor() as usize).min(collection.total_count);
-            let end_index = ((window_end / row_extent).ceil() as usize).min(collection.total_count);
-
-            if start_index < end_index {
-                let cross_extent = slot.rect.size().across(axis);
-                // The window is at most `viewport + 2 * overscan` rows wide,
-                // never `total_count`: `rows` is never called with a range
-                // wider than that.
-                let fetched = ctx.rows.rows(&collection.source, start_index..end_index);
-                // A source that cannot answer the whole range returns fewer
-                // rows (`RowSource::rows`'s contract); that shortfall is
-                // reported by placing fewer rows, never by fabricating the
-                // rest.
-
-                // Where this window starts still comes from the uniform
-                // grid, and has to: the rows above `start_index` were never
-                // materialized, so nothing has measured them and the
-                // estimate is the only answer available. Inside the window
-                // the estimate stops being used — see the running cursor at
-                // the end of the loop.
-                let mut main_origin =
-                    origin_along(slot.rect, axis) + start_index as f32 * row_extent;
-                for row_node in fetched.iter() {
-                    let row_proposal =
-                        SizeProposal::exact(Size::from_axes(axis, row_extent, cross_extent));
-                    let row_size = crate::layout::measure(row_node, ctx, path, row_proposal);
-                    let row_along = row_size.along(axis);
-                    // Across the axis, the proposal was `exact`, and an
-                    // exact proposal is a contract: a row is as wide as the
-                    // list it sits in, whatever its own content measured.
-                    // Placing it at the measured extent instead is what left
-                    // a focus bar, a hover fill and a selected fill stopping
-                    // wherever that row's own text happened to stop, ragged
-                    // down the list. `max` rather than a plain substitution
-                    // so a row that genuinely overflows keeps its overflow
-                    // and the clip stays the thing that hides it.
-                    let row_across = row_size.across(axis).max(cross_extent);
-                    let row_rect = axis_rect(slot.rect, axis, main_origin, row_along, row_across);
-                    // Inherit the scroll's viewport clip. Overscan rows sit
-                    // outside it on purpose: they are placed so a later
-                    // frame can scroll without a hole, and they are not
-                    // visible, hittable, or Tab-reachable until they are.
-                    let row_slot = slot.with_rect(row_rect);
-                    crate::layout::place(row_node, ctx, path, row_slot, sink);
-                    // The cursor advances by what this row actually
-                    // measured, never by the estimate. That is what makes
-                    // two placed rows disjoint no matter how wrong the
-                    // estimate is: it used to advance by `index *
-                    // estimated_extent`, so a list of 44-tall rows declaring
-                    // an estimate of 28 drew every row 16 units on top of
-                    // the one before it.
-                    main_origin += row_along;
-                }
-            }
+    // Fetch and measure: from `start` through the anchor, then on until the
+    // measured rows reach the window's end.
+    let mut rows: Vec<(std::sync::Arc<ViewNode>, f32, f32)> = Vec::new();
+    let mut next = start;
+    let mut reach = anchor_at;
+    let mut guess_end = (before.index_at(window_end) + 1).min(count);
+    while next < count && rows.len() < budget && (next <= anchor || reach < window_end) {
+        let end = guess_end
+            .max(next + 1)
+            .min(count)
+            .min(next + budget - rows.len());
+        // The window is at most `viewport + 2 * overscan` wide, never
+        // `total_count`: `rows` is never called with a range wider than
+        // that. A source that cannot answer the whole range returns fewer
+        // rows (`RowSource::rows`'s contract); the shortfall is reported by
+        // placing fewer rows, never by fabricating the rest.
+        let fetched = ctx.rows.rows(&collection.source, next..end);
+        if fetched.is_empty() {
+            break;
         }
+        for row_node in fetched {
+            let row_proposal = SizeProposal::exact(Size::from_axes(axis, estimate, cross_extent));
+            let row_size = crate::layout::measure(&row_node, ctx, path, row_proposal);
+            let along = row_size.along(axis).max(0.0);
+            // Across the axis, the proposal was `exact`, and an exact
+            // proposal is a contract: a row is as wide as the list it sits
+            // in, whatever its own content measured. Placing it at the
+            // measured extent instead is what left a focus bar, a hover fill
+            // and a selected fill stopping wherever that row's own text
+            // happened to stop, ragged down the list. `max` rather than a
+            // plain substitution so a row that genuinely overflows keeps its
+            // overflow and the clip stays the thing that hides it.
+            let across = row_size.across(axis).max(cross_extent);
+            if next >= anchor {
+                reach += along;
+            }
+            rows.push((row_node, along, across));
+            next += 1;
+        }
+        guess_end = next + ((window_end - reach) / estimate).ceil().max(1.0) as usize;
     }
 
-    sink.leave();
+    // Positions: the anchor where the ledger had it, the rest by measured
+    // extent around it.
+    let anchor_slot = anchor.saturating_sub(start).min(rows.len());
+    let mut leads = vec![0.0_f32; rows.len()];
+    let mut cursor = anchor_at;
+    for k in anchor_slot..rows.len() {
+        leads[k] = cursor;
+        cursor += rows[k].1;
+    }
+    let mut cursor = anchor_at;
+    for k in (0..anchor_slot).rev() {
+        cursor -= rows[k].1;
+        leads[k] = cursor;
+    }
+
+    // Fold the measurements in, then hand the scroll the distance they moved
+    // the anchor.
+    let (moved, changed) = {
+        let mut list =
+            ctx.extents
+                .open(id, estimate, cross_extent, ctx.theme_rev, ctx.scale, count);
+        for (k, (row_node, along, _)) in rows.iter().enumerate() {
+            let key = row_node.key.as_str();
+            list.check(start + k, key);
+            list.record(start + k, key, *along, anchor);
+        }
+        (
+            list.list().prefix(anchor) - anchor_at,
+            list.list().total() != total,
+        )
+    };
+    if let Some(scroll_id) = scroll_id {
+        ctx.extents.shift(&scroll_id, moved);
+    }
+    if changed {
+        // The content extent this node and every ancestor measured is stale.
+        ctx.cache.apply(&crate::layout::ChangeSet::Nodes(
+            std::iter::once(id.to_owned()).collect(),
+        ));
+    }
+
+    let rows = rows
+        .into_iter()
+        .zip(leads)
+        .map(|((row_node, along, across), lead)| {
+            let rect = axis_rect(slot.rect, axis, origin + lead, along, across);
+            (row_node, rect)
+        })
+        .collect();
+    Some(Window { first: start, rows })
 }
 
 /// A declared `estimated_extent`, or the shared default when the declared
@@ -1195,7 +1291,10 @@ mod tests {
     /// frame's overscan fails this assertion.
     #[test]
     fn total_count_reaches_semantics_while_placement_count_is_only_the_window() {
-        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 100_000).each_row_tall(24.0),
+        );
         h.set_scroll("/list", 0.0);
         let tree = scroll_with_collection(100_000, 24.0, 120.0);
         let mut path = KeyPath::root();
@@ -1253,7 +1352,10 @@ mod tests {
     /// overscan at both ends.
     #[test]
     fn the_scrolls_declared_overscan_reaches_its_collection() {
-        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 100_000).each_row_tall(24.0),
+        );
         h.set_scroll("/list", 0.0);
         let tree = collection_in_scroll(
             "list",
@@ -1287,7 +1389,10 @@ mod tests {
     /// whichever ancestor id happens to have an entry in the offset map.
     #[test]
     fn a_stale_offset_on_a_plain_ancestor_does_not_drive_the_collection() {
-        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 100_000).each_row_tall(24.0),
+        );
         // `/root` is a `stack`. It is not a scroll container, and this entry
         // is stale. The `scroll` between it and the collection has never been
         // scrolled, so it has no entry at all.
@@ -1363,7 +1468,10 @@ mod tests {
     /// one that happens to have an entry in the offset map.
     #[test]
     fn the_nearest_scroll_ancestor_wins_over_a_farther_one() {
-        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 100_000).each_row_tall(24.0),
+        );
         h.set_scroll("/outer", 0.0);
         let inner = collection_in_scroll(
             "inner",
@@ -1442,7 +1550,10 @@ mod tests {
     fn a_surface_starts_a_fresh_scroll_context() {
         use crate::tree::{Anchor, Layer};
 
-        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 30));
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 30).each_row_tall(24.0),
+        );
         h.set_scroll("/list", 240.0);
         let collection = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
             total_count: Some(30),

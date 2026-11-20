@@ -9,6 +9,7 @@
 //! are implemented outside this crate.
 
 pub mod constraints;
+pub mod extents;
 pub mod grid;
 pub mod leaf;
 pub mod overlay;
@@ -34,6 +35,7 @@ use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
 use crate::tree::{InsetRefs, KeyPath, NodeKind, Reveal, Role, TextWrap, ViewNode};
 
+pub use extents::RowExtents;
 pub use proposal::{ChangeSet, MeasureCache, MeasureKey, Proposal, SizeProposal};
 
 /// What a text node needs measured.
@@ -267,6 +269,10 @@ pub struct LayoutCtx<'a> {
     pub rows: &'a mut dyn RowSource,
     /// Memoized responses.
     pub cache: &'a mut MeasureCache,
+    /// What each virtualized collection's rows measured on earlier frames,
+    /// and the scroll shifts that keep their visible rows still
+    /// ([`extents`]).
+    pub extents: &'a mut RowExtents,
     /// The state snapshot this frame reads.
     pub state: &'a LayoutState,
     /// The theme snapshot in force for this frame.
@@ -1317,6 +1323,8 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         actions: node.interactions.clone(),
         total_count: node.props.total_count,
         row_source: node.props.source.clone(),
+        // Written by `scroll::place_collection` once it knows its window.
+        first_row: None,
         cross_axis: match node.kind {
             NodeKind::Scroll => {
                 let scroll = node.props.scroll();

@@ -922,6 +922,27 @@ fn every_configuration_satisfies_the_negotiation_contract() {
     }
 }
 
+/// Petrify `cfg` until the frame stops teaching the row ledger anything: the
+/// frame a host shows once it is idle.
+///
+/// A virtualized list remembers what its rows measured
+/// (`gorgon_petra::layout::extents`), so the first frame of a list whose rows
+/// do not measure their estimate shows the estimated content extent and the
+/// second the measured one. That memory is host state the frame reads, like a
+/// scroll offset; the measure cache is not, and is what this file's history
+/// checks are about.
+fn settled_with(harness: &mut Harness<MonoContent, GeneratedRows>, cfg: &Config) -> PetrifiedFrame {
+    for _ in 0..8 {
+        let revision = harness.extents.revision();
+        let frame = petrify_with(harness, cfg);
+        harness.apply_shifts();
+        if harness.extents.revision() == revision {
+            return frame;
+        }
+    }
+    panic!("{}: the row ledger never settled", cfg.label());
+}
+
 /// US1 scenario 3: the same tree, state, size and theme petrify to the same
 /// digest — from a cold engine, from one that has already run this exact
 /// configuration, and from one whose measurement cache was warmed on a
@@ -929,14 +950,16 @@ fn every_configuration_satisfies_the_negotiation_contract() {
 ///
 /// The three histories are the point. A digest that is a pure function of the
 /// declared inputs cannot notice any of them; a negotiation that reads
-/// anything the cache carries between passes fails at least one.
+/// anything the cache carries between passes fails at least one. Each frame
+/// compared is the settled one ([`settled_with`]), so the row ledger, which
+/// is state rather than cache, has converged before anything is compared.
 #[test]
 fn the_same_configuration_petrifies_to_one_digest() {
     for cfg in matrix() {
-        let cold = frame_of(&cfg);
+        let cold = settled_with(&mut harness_for(&cfg), &cfg);
 
         let mut warm = harness_for(&cfg);
-        let first = petrify_with(&mut warm, &cfg);
+        let first = settled_with(&mut warm, &cfg);
         let second = petrify_with(&mut warm, &cfg);
 
         let other = Config {
@@ -946,8 +969,11 @@ fn the_same_configuration_petrifies_to_one_digest() {
         };
         let mut polluted = harness_for(&cfg);
         let _ = petrify_with(&mut polluted, &other);
+        // Cache pollution only: the row ledger is state, like the scroll
+        // offset `harness_for` set, so what `other` taught it is dropped.
+        polluted.extents.clear();
         polluted.cache.set_capacity(4);
-        let after_pollution = petrify_with(&mut polluted, &cfg);
+        let after_pollution = settled_with(&mut polluted, &cfg);
 
         let where_ = cfg.label();
         assert_eq!(
