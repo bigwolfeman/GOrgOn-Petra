@@ -181,9 +181,14 @@ fn measure_input(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposa
     // the field's natural width. Measuring the empty string instead would make
     // a fresh field collapse and then jump on the first keystroke.
     let props = node.props.text();
-    let content = match node.props.text.as_deref() {
-        Some(text) if !text.is_empty() => text,
-        _ => node.props.placeholder.as_deref().unwrap_or(" "),
+    // The runs measure only the field's own value: they were written
+    // against its bytes, and the painter drops them over a placeholder.
+    let (content, runs) = match node.props.text.as_deref() {
+        Some(text) if !text.is_empty() => (text, crate::layout::TextRuns::Tree(&node.props.runs)),
+        _ => (
+            node.props.placeholder.as_deref().unwrap_or(" "),
+            crate::layout::TextRuns::Plain,
+        ),
     };
     // Same inset the painter uses for `Input` (`spacing-04` each side). A
     // shrink-wrapped field has to ask for that room at measure time or the
@@ -217,6 +222,7 @@ fn measure_input(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposa
         wrap: input_wrap,
         max_lines: input_max_lines,
         available_width: inner_width,
+        runs,
     };
     let size = ctx.content.text(&req).size;
     // A field fills the width it is given and asks for all the width there

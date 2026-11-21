@@ -627,7 +627,7 @@ pub fn hit_test_above<'a>(
     floor: Option<&str>,
 ) -> Option<&'a Placement> {
     for p in frame.paint_order().into_iter().rev() {
-        if p.rect.contains(pos)
+        if p.contains(pos)
             && p.clip.contains(pos)
             && p.semantics.actions.contains(&interaction)
             && !p.semantics.disabled

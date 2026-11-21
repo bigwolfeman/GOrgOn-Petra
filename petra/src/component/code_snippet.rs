@@ -414,6 +414,8 @@ impl CodeInk {
             background: None,
             len,
             foreground: self.token(),
+            weight: None,
+            link: None,
         }
     }
 }

@@ -387,6 +387,24 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
                     w.bool(run.underline);
                 }
             }
+            // A band behind a run and a run's weight are picture changes the
+            // same way, written on the same terms: only for a list that has
+            // one, after everything before them, so every frame without a
+            // band or a weight keeps its digest. The band was missing from
+            // the stream until the weight joined it, so two frames differing
+            // only in a search hit's band hashed alike.
+            if runs.iter().any(|run| run.background.is_some()) {
+                w.text("background");
+                for run in runs {
+                    w.opt_text(run.background.as_deref());
+                }
+            }
+            if runs.iter().any(|run| run.weight.is_some()) {
+                w.text("weight");
+                for run in runs {
+                    w.opt_text(run.weight.map(crate::token::TypographyWeight::as_str));
+                }
+            }
         }
         None => w.bool(false),
     }
@@ -780,6 +798,12 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 // which is hashed above; this flag only says hit testing
                 // passes through the node. Same argument as `behaviour`.
                 concealed: _,
+                // Where a link run's words landed, relative to the rect. The
+                // rect is hashed, and the words, the style and the width
+                // that decide the lines are hashed on the text's own
+                // placement, so these follow from the stream; they decide
+                // what the pointer hits and paint nothing.
+                fragments: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -1361,6 +1385,9 @@ mod tests {
             },
             semantics: PlacementSemantics {
                 role: Some(Role::Button),
+                // Non-default, held out of the stream: the pinned vectors
+                // below stay unchanged with it set.
+                fragments: vec![crate::geom::Rect::new(0.0, 0.0, 4.0, 4.0)],
                 label: Some("Fibers".into()),
                 value: Some("3".into()),
                 focused: true,
@@ -1491,6 +1518,7 @@ mod tests {
             background: None,
             len,
             foreground: fg.map(ToOwned::to_owned),
+            weight: None,
         };
 
         let plain = with(Vec::new());
@@ -1520,6 +1548,54 @@ mod tests {
         ] {
             assert_ne!(a, b, "{what} hash alike");
         }
+    }
+
+    /// A run's weight and a run's band are pictures, so each moves the paint
+    /// hash; a list naming neither hashes as it did before either field was
+    /// in the stream. Falsify by dropping the `weight` (or `background`)
+    /// block from `hash_paint_content`: the pair hashes alike.
+    #[test]
+    fn a_runs_weight_and_band_each_move_the_paint_hash() {
+        use crate::token::TypographyWeight;
+        let with = |runs: Vec<TextRunPaint>| {
+            let mut content = rich_content();
+            if let Some(text) = content.text.as_mut() {
+                text.runs = runs;
+            }
+            hash_paint_content(&content)
+        };
+        let run = |len: usize| TextRunPaint {
+            len,
+            foreground: None,
+            underline: false,
+            background: None,
+            weight: None,
+        };
+        let plain = with(vec![run(3), run(3)]);
+        let strong = with(vec![
+            TextRunPaint {
+                weight: Some(TypographyWeight::Medium),
+                ..run(3)
+            },
+            run(3),
+        ]);
+        let bold = with(vec![
+            TextRunPaint {
+                weight: Some(TypographyWeight::Bold),
+                ..run(3)
+            },
+            run(3),
+        ]);
+        let banded = with(vec![
+            TextRunPaint {
+                background: Some("layer-selected".to_owned()),
+                ..run(3)
+            },
+            run(3),
+        ]);
+        assert_ne!(plain, strong, "a strong stretch is a different picture");
+        assert_ne!(strong, bold, "two weights are two pictures");
+        assert_ne!(plain, banded, "a band is a different picture");
     }
 
     /// A canvas whose numbers are all distinct and none of them round, so a

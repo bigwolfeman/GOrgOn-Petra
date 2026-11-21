@@ -260,6 +260,17 @@ pub enum Violation {
         /// lengths summed correctly and a boundary was the problem instead.
         split_at: Option<usize>,
     },
+    /// A [`crate::tree::TextRun::link`] that cannot be a placement: on a node
+    /// that is not `text` (a field's runs are paint over its value, which the
+    /// field owns), over an empty stretch (nothing to point at or to read),
+    /// or under a key another link in the same node already holds (two
+    /// placements with one id).
+    TextRunLinkRefused {
+        /// The link's key.
+        key: String,
+        /// Which of the three it is.
+        reason: &'static str,
+    },
     /// A grid child declares a span of no tracks, or of more tracks than the
     /// grid has on that axis.
     ///
@@ -580,6 +591,7 @@ impl Violation {
             | Self::ScrollParamOwnedByAncestor { .. }
             | Self::PaddingOnLeafKind { .. }
             | Self::TextRunsDoNotCoverTheText { .. }
+            | Self::TextRunLinkRefused { .. }
             | Self::GridSpanOutOfRange { .. }
             | Self::AnchorCycle { .. }
             | Self::UnknownStateName { .. }
@@ -784,6 +796,10 @@ impl fmt::Display for Violation {
                     "props.runs claim {claimed} bytes of a {text_len}-byte props.text; the runs of a node must tile its text exactly, or the uncovered part takes whatever ink the last run left behind"
                 ),
             },
+            Self::TextRunLinkRefused { key, reason } => write!(
+                f,
+                "props.runs declares a link `{key}` {reason}; a link run becomes a placement under its text, so it needs a `text` node, at least one byte, and a key of its own"
+            ),
             Self::GridSpanOutOfRange {
                 prop,
                 count,
@@ -1352,8 +1368,24 @@ fn check_padding(node: &ViewNode, push: &mut impl FnMut(Violation)) {
 }
 
 /// `props.runs`, when declared, tiles `props.text` exactly: every byte in
-/// exactly one run, and no run boundary inside a `char`.
+/// exactly one run, and no run boundary inside a `char`. A link run sits on a
+/// `text` node, covers at least one byte, and holds a key of its own.
 fn check_text_runs(node: &ViewNode, push: &mut impl FnMut(Violation)) {
+    let mut keys = std::collections::BTreeSet::new();
+    for run in &node.props.runs {
+        let Some(link) = &run.link else { continue };
+        let refuse = |reason| Violation::TextRunLinkRefused {
+            key: link.key.as_str().to_owned(),
+            reason,
+        };
+        if node.kind != crate::tree::NodeKind::Text {
+            push(refuse("on a node that is not `text`"));
+        } else if run.len == 0 {
+            push(refuse("over an empty stretch"));
+        } else if !keys.insert(&link.key) {
+            push(refuse("under a key another link in this node holds"));
+        }
+    }
     if !node.props.runs.is_empty() {
         let text = node.props.text.as_deref().unwrap_or_default();
         let claimed: usize = node.props.runs.iter().map(|run| run.len).sum();
@@ -2519,6 +2551,8 @@ mod tests {
                         background: None,
                         len: *len,
                         foreground: None,
+                        weight: None,
+                        link: None,
                     })
                     .collect(),
                 ..Props::default()

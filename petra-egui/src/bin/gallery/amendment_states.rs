@@ -352,6 +352,7 @@ fn syntax_sample() -> (String, Vec<TextRun>) {
             foreground: class.map(|c| {
                 syntax_token(c).unwrap_or_else(|| panic!("{c:?} is not a highlight class"))
             }),
+            ..TextRun::default()
         });
     }
     (code, runs)

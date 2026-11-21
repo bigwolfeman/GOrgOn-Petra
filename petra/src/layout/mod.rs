@@ -33,7 +33,7 @@ use crate::geom::{Axis, Insets, Rect, Scale, Size};
 use crate::input::{Capture, TextSelection};
 use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
-use crate::tree::{InsetRefs, KeyPath, NodeKind, Reveal, Role, TextWrap, ViewNode};
+use crate::tree::{InsetRefs, KeyPath, NodeKind, Reveal, Role, TextRun, TextWrap, ViewNode};
 
 pub use extents::RowExtents;
 pub use proposal::{ChangeSet, MeasureCache, MeasureKey, Proposal, SizeProposal};
@@ -51,6 +51,49 @@ pub struct TextRequest<'a> {
     pub max_lines: Option<usize>,
     /// Width the run may use, or `None` for an open probe.
     pub available_width: Option<f32>,
+    /// The runs over [`TextRequest::text`], for the one thing in them that
+    /// is a shaping input: [`TextRun::weight`]. Ink, underline and band are
+    /// read by the painter from the frame and never change an extent.
+    pub runs: TextRuns<'a>,
+}
+
+/// The runs a [`TextRequest`] shapes with, borrowed in whichever form the
+/// caller already holds, so neither layout nor the painter copies a list to
+/// ask for a measurement.
+///
+/// Layout measures from the tree's runs and the painter shapes from the
+/// frame's; both name the same lengths and weights
+/// (`layout::paint_content_of` copies one into the other), which is what
+/// keeps a measured run and its painted run the same width.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TextRuns<'a> {
+    /// One face over the whole string.
+    #[default]
+    Plain,
+    /// A node's own [`crate::tree::Props::runs`].
+    Tree(&'a [TextRun]),
+    /// A frame's [`TextPaint::runs`].
+    Frame(&'a [TextRunPaint]),
+}
+
+impl TextRuns<'_> {
+    /// `(byte length, weight)` per run, tiling the text the way the runs do,
+    /// or empty when no run names a weight. Empty shapes exactly what
+    /// [`TextRuns::Plain`] shapes, so a shaper keys and lays out a
+    /// colour-only list as the plain string it is.
+    #[must_use]
+    pub fn weights(&self) -> Vec<(usize, Option<crate::token::TypographyWeight>)> {
+        match self {
+            Self::Plain => Vec::new(),
+            Self::Tree(runs) if runs.iter().any(|r| r.weight.is_some()) => {
+                runs.iter().map(|r| (r.len, r.weight)).collect()
+            }
+            Self::Frame(runs) if runs.iter().any(|r| r.weight.is_some()) => {
+                runs.iter().map(|r| (r.len, r.weight)).collect()
+            }
+            Self::Tree(_) | Self::Frame(_) => Vec::new(),
+        }
+    }
 }
 
 /// What a shaper answers with.
@@ -94,6 +137,19 @@ pub struct InkOverflow {
 pub trait ContentMeasure {
     /// Shape a text run.
     fn text(&mut self, req: &TextRequest<'_>) -> TextMeasurement;
+    /// The rectangles the bytes `range` of `req`'s shaped run cover, one per
+    /// line they cross, relative to the run's top-left, in line order.
+    ///
+    /// The second half of the U-09 delegation. The engine holds no glyph
+    /// geometry and does not want any; it asks this for exactly one thing,
+    /// where a link run's words landed, so the link can be a placement of its
+    /// own ([`crate::tree::TextRun::link`]). The answer must come from the
+    /// same shaping [`ContentMeasure::text`] does for the same request, or a
+    /// link's hit area drifts off its words.
+    ///
+    /// Empty when none of the range is drawn: cut by a line cap or an
+    /// ellipsis, or an empty range.
+    fn fragments(&mut self, req: &TextRequest<'_>, range: Range<usize>) -> Vec<Rect>;
     /// Size an image for an offer.
     fn image(&mut self, source: &str, proposal: SizeProposal) -> Size;
     /// Size a host-registered custom node for an offer.
@@ -1056,6 +1112,7 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
                         foreground: run.foreground.as_ref().map(|n| n.as_str().to_owned()),
                         underline: run.underline,
                         background: run.background.as_ref().map(|n| n.as_str().to_owned()),
+                        weight: run.weight,
                     })
                     .collect()
             } else {
@@ -1337,6 +1394,8 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         behaviour: node.behaviour,
         raw_claim: node.raw_claim,
         bindings: node.bindings.clone(),
+        // A link run's, written by `text::place_links` after this answers.
+        fragments: Vec::new(),
     }
 }
 

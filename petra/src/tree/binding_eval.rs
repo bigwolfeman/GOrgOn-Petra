@@ -1628,6 +1628,8 @@ mod tests {
             background: None,
             len: 3,
             foreground: None,
+            weight: None,
+            link: None,
         }];
         let mut inputs = ResolveInputs::new();
         inputs.insert("k".into(), str_value("four"));

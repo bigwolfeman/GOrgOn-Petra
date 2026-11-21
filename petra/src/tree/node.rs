@@ -403,6 +403,11 @@ pub enum Role {
     Row,
     /// One cell of a row.
     Cell,
+    /// A stretch of running text that goes somewhere when activated: a
+    /// [`crate::tree::TextRun::link`]. A standalone link control is a
+    /// [`Role::Button`] (`component::link`); this is the one that is words
+    /// inside a paragraph.
+    Link,
     /// A host-defined role, exposed under its own name.
     Custom(String),
 }
@@ -432,6 +437,7 @@ pub const ROLE_NAMES: &[&str] = &[
     "table",
     "row",
     "cell",
+    "link",
 ];
 
 impl Role {
@@ -469,6 +475,7 @@ impl Role {
             Self::Table => "table",
             Self::Row => "row",
             Self::Cell => "cell",
+            Self::Link => "link",
             Self::Custom(_) => return None,
         };
         Some(name)
@@ -509,6 +516,7 @@ impl Role {
             "table" => Ok(Self::Table),
             "row" => Ok(Self::Row),
             "cell" => Ok(Self::Cell),
+            "link" => Ok(Self::Link),
             other => Err(other.to_owned()),
         }
     }
@@ -1424,7 +1432,7 @@ mod tests {
             assert_eq!(&role.as_wire(), name);
             assert_eq!(role.builtin_name(), Some(*name));
         }
-        assert_eq!(super::ROLE_NAMES.len(), 21);
+        assert_eq!(super::ROLE_NAMES.len(), 22);
         assert!(Role::Custom("x".into()).builtin_name().is_none());
     }
 

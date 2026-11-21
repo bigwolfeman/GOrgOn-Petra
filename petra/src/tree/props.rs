@@ -48,16 +48,19 @@ use super::key::{Key, KeyPath};
 use crate::geom::{Axis, Insets};
 use crate::token::{ThemeSnapshot, TokenName};
 
-/// One coloured stretch of a text node's content.
+/// One stretch of a text node's content: its ink, its marks, and optionally
+/// its weight.
 ///
-/// A run changes the **ink and nothing else**. It carries no font, no size
-/// and no weight, because the thing this exists for — syntax colour, and
-/// later an LSP `textDocument/semanticTokens` response — is a colour per
-/// token over one face. Keeping it to colour is what makes it cheap: text is
-/// shaped through [`crate::layout::ContentMeasure::text`], whose request
-/// carries the string, the typography token, the wrap policy and the line
-/// cap, so a run touches none of a measurement's inputs and every placed
-/// rect on the page is the rect it was before.
+/// Ink, underline and band are **paint only**. The thing they exist for,
+/// syntax colour and an LSP `textDocument/semanticTokens` response, is a
+/// colour per token over one face, and none of them moves a glyph.
+///
+/// [`TextRun::weight`] is the one field that does: a `strong` stretch in a
+/// paragraph is wider in its emphasis face. So the runs travel into
+/// [`crate::layout::TextRequest::runs`], and the shaper measures and paints
+/// the same faces. A run list with no weight in it shapes exactly what the
+/// plain string shapes, so every rect it placed before is the rect it places
+/// now.
 ///
 /// `len` is a **byte** count, and the runs of a node cover its text exactly:
 /// acceptance refuses a list that overruns, underruns, or splits a `char`
@@ -92,6 +95,43 @@ pub struct TextRun {
     /// surface, so the mark is not a hue alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<TokenName>,
+    /// The weight this stretch is set in, or `None` for the node's own
+    /// typography weight. Markdown's `strong` is
+    /// [`crate::token::TypographyWeight::Medium`], the step the shipped ramp
+    /// draws Carbon's semibold with.
+    ///
+    /// Unlike every other field here it changes the shaped run, so it is a
+    /// measurement input ([`crate::layout::TextRequest::runs`]). Inside a
+    /// monospace style it changes nothing: the mono family has one face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<crate::token::TypographyWeight>,
+    /// Makes this stretch a link of its own, inside the paragraph it reads in.
+    ///
+    /// Layout gives the stretch a placement under the text's, keyed
+    /// [`RunLink::key`], with one rectangle per line the words wrap onto
+    /// ([`crate::frame::PlacementSemantics::fragments`]). Being a placement is
+    /// the whole design: Tab reaches it in reading order, the pointer hits it
+    /// on its own words and nowhere else, an activation routes to its id, and
+    /// the semantic tree lists it as a `link` labelled with those words. The
+    /// glyphs stay the text's, painted once.
+    ///
+    /// Only a `text` node may carry one, a link's run cannot be empty, and two
+    /// links in one node cannot share a key
+    /// ([`crate::tree::Violation::TextRunLinkRefused`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<RunLink>,
+}
+
+/// A run that is a link ([`TextRun::link`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RunLink {
+    /// The key of the link's placement under its text, so the id an
+    /// activation names is the text's id and then this key.
+    pub key: Key,
+    /// Where the link goes, as the semantic tree's value: what assistive
+    /// technology reads after the words. Never followed by Petra.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 /// How a text node handles content it cannot fit.
@@ -1277,6 +1317,8 @@ pub struct TextProps<'a> {
     pub max_lines: Option<usize>,
     /// Typography token name, or `None` for the theme's body style.
     pub style: Option<&'a str>,
+    /// The node's runs ([`Props::runs`]), which can carry a weight.
+    pub runs: &'a [TextRun],
 }
 
 /// Resolved `surface` parameters.
@@ -1437,6 +1479,7 @@ impl Props {
             wrap: self.wrap.unwrap_or_default(),
             max_lines: self.max_lines,
             style: self.style.as_ref().map(TokenName::as_str),
+            runs: &self.runs,
         }
     }
 

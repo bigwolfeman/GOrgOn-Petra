@@ -216,7 +216,7 @@ pub struct TypographyValue {
 /// Font weight, as the small closed set the engine distinguishes rather
 /// than a raw 100-900 number: a token names a role ("this heading is
 /// `bold`"), not a font-family-specific numeric weight.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TypographyWeight {
     /// Body-text weight.
@@ -225,6 +225,19 @@ pub enum TypographyWeight {
     Medium,
     /// Heading/emphasis weight.
     Bold,
+}
+
+impl TypographyWeight {
+    /// The serialized name, which is also what the frame digest writes, so
+    /// reordering the variants can never rewrite a published digest.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Medium => "medium",
+            Self::Bold => "bold",
+        }
+    }
 }
 
 /// Which face class a typography token draws through.

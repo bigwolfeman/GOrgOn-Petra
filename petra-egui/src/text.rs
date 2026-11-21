@@ -14,7 +14,7 @@ use crate::image::ImageSources;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Context, FontFamily, FontId, Galley};
 use gorgon_petra::cache::LruCache;
-use gorgon_petra::geom::Size;
+use gorgon_petra::geom::{Rect, Size};
 use gorgon_petra::layout::{
     ContentMeasure, InkOverflow, SizeProposal, TextMeasurement, TextRequest,
 };
@@ -143,13 +143,20 @@ impl FontFaces {
 /// for exactly that reason. Carrying both together is what stops the
 /// line-height half from being dropped between the theme and the galley.
 ///
-/// Weight is not a third field here: it is spent at construction, choosing
-/// the family in `font` through [`FontFaces`] — see that type for what the
-/// default font stack can and cannot express.
+/// The token's own weight is spent at construction, choosing the family in
+/// `font` through [`FontFaces`] — see that type for what the default font
+/// stack can and cannot express. [`TextStyle::weights`] keeps the other two,
+/// so a run that names a weight ([`gorgon_petra::tree::TextRun::weight`])
+/// draws in the same size, leading and tracking through its own face.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
     /// Size and family.
     pub font: FontId,
+    /// The family each weight class draws through at this style, in
+    /// `Regular`, `Medium`, `Bold` order, or `None` when a run's weight
+    /// changes nothing: a monospace style (the mono family has one face) or
+    /// a style built from a bare [`FontId`].
+    pub weights: Option<[FontFamily; 3]>,
     /// Distance between the bottom rows of two subsequent lines, in logical
     /// units. `None` leaves it to the font's own metrics.
     pub line_height: Option<f32>,
@@ -165,6 +172,7 @@ impl TextStyle {
     pub fn new(font: FontId) -> Self {
         Self {
             font,
+            weights: None,
             line_height: None,
             extra_letter_spacing: 0.0,
         }
@@ -180,10 +188,35 @@ impl TextStyle {
     /// What a theme's typography token asks for, drawn through `faces`.
     #[must_use]
     pub fn from_token(value: &TypographyValue, faces: &FontFaces) -> Self {
+        let at = |weight| faces.family(value.family, weight).clone();
         Self {
-            font: FontId::new(value.size, faces.family(value.family, value.weight).clone()),
+            font: FontId::new(value.size, at(value.weight)),
+            weights: (value.family == TypographyFamily::Sans).then(|| {
+                [
+                    at(TypographyWeight::Regular),
+                    at(TypographyWeight::Medium),
+                    at(TypographyWeight::Bold),
+                ]
+            }),
             line_height: Some(value.line_height),
             extra_letter_spacing: value.letter_spacing,
+        }
+    }
+
+    /// The font a run set in `weight` draws with: this style's own font for
+    /// `None` or a style that has no weight families.
+    #[must_use]
+    pub fn font_at(&self, weight: Option<TypographyWeight>) -> FontId {
+        match (weight, &self.weights) {
+            (Some(weight), Some(families)) => {
+                let family = match weight {
+                    TypographyWeight::Regular => &families[0],
+                    TypographyWeight::Medium => &families[1],
+                    TypographyWeight::Bold => &families[2],
+                };
+                FontId::new(self.font.size, family.clone())
+            }
+            _ => self.font.clone(),
         }
     }
 }
@@ -345,6 +378,11 @@ struct GalleyKey {
     /// run gets its own entry: two inks over one string are two pictures and
     /// must not share a galley.
     runs: Vec<(usize, Option<u32>, bool, Option<u32>)>,
+    /// Weight runs over the text, from [`TextRequest::runs`], or empty when
+    /// no run names a weight. A shaping input: the same string with a
+    /// `strong` stretch is wider, so it is its own galley for measuring and
+    /// for painting alike, and both read it off the request.
+    weights: Vec<(usize, Option<TypographyWeight>)>,
 }
 
 /// One painted run of a text: its byte length, its ink (`None` for the
@@ -521,6 +559,7 @@ impl GalleyShaper {
         // for the cache and the counters, and a `TextStyle` is a size, a
         // family handle and an optional float.
         let style = self.typography.resolve(req.style).0.clone();
+        let weights = req.runs.weights();
         let (max_rows, break_anywhere, overflow) = wrapping(req);
         let wrap_width = req.available_width.unwrap_or(f32::INFINITY);
         let key = GalleyKey {
@@ -554,6 +593,7 @@ impl GalleyShaper {
                     )
                 })
                 .collect(),
+            weights: weights.clone(),
         };
         if let Some(hit) = self.galleys.get(&key) {
             self.reused += 1;
@@ -564,8 +604,11 @@ impl GalleyShaper {
         // which takes a `FontId` and has nowhere to put a line height.
         // `single_section` leaves `wrap` at its default, so the wrap width
         // `simple` would have set is set here.
-        let format = |color: Color32, underline: bool, background: Option<Color32>| TextFormat {
-            font_id: style.font.clone(),
+        let format = |weight: Option<TypographyWeight>,
+                      color: Color32,
+                      underline: bool,
+                      background: Option<Color32>| TextFormat {
+            font_id: style.font_at(weight),
             color,
             background: background.unwrap_or(Color32::TRANSPARENT),
             line_height: style.line_height,
@@ -579,40 +622,36 @@ impl GalleyShaper {
             },
             ..TextFormat::default()
         };
-        let mut job = if runs.is_empty() {
+        let mut job = if runs.is_empty() && weights.is_empty() {
             LayoutJob::single_section(
                 req.text.to_owned(),
-                format(Color32::PLACEHOLDER, false, None),
+                format(None, Color32::PLACEHOLDER, false, None),
             )
         } else {
             let mut job = LayoutJob {
                 text: req.text.to_owned(),
                 ..LayoutJob::default()
             };
-            let mut at = 0usize;
-            for run in runs {
-                // Clamped, not trusted: acceptance guarantees the tiling for
-                // an accepted tree, and a shaper handed a bad one draws a
-                // short line rather than panicking inside a paint pass.
-                let end = at.saturating_add(run.len).min(req.text.len());
-                if end > at {
-                    job.sections.push(egui::text::LayoutSection {
-                        leading_space: 0.0,
-                        byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(end),
-                        format: format(
+            // One section per stretch over which both the ink run and the
+            // weight run hold still: the two lists tile the same string at
+            // their own boundaries, and a section is where neither changes.
+            // Clamped, not trusted: acceptance guarantees the tiling for an
+            // accepted tree, and a shaper handed a bad one draws a short line
+            // rather than panicking inside a paint pass.
+            for (range, weight, ink) in sections(req.text.len(), &weights, runs) {
+                let (color, underline, background) =
+                    ink.map_or((Color32::PLACEHOLDER, false, None), |run| {
+                        (
                             run.color.unwrap_or(Color32::PLACEHOLDER),
                             run.underline,
                             run.background,
-                        ),
+                        )
                     });
-                }
-                at = end;
-            }
-            if at < req.text.len() {
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: 0.0,
-                    byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(req.text.len()),
-                    format: format(Color32::PLACEHOLDER, false, None),
+                    byte_range: egui::text::ByteIndex(range.start)
+                        ..egui::text::ByteIndex(range.end),
+                    format: format(weight, color, underline, background),
                 });
             }
             job
@@ -625,6 +664,57 @@ impl GalleyShaper {
         self.galleys.insert(key, Arc::clone(&galley));
         galley
     }
+}
+
+/// The stretches of a `len`-byte string over which neither the weight runs
+/// nor the ink runs change, in order, tiling `0..len`.
+///
+/// Each list tiles the string at its own boundaries (either may be empty,
+/// meaning one stretch); a boundary past `len` is clamped and a list that
+/// stops short leaves the tail at no weight and no ink, the placeholder the
+/// painter fills with the node's own `foreground`.
+fn sections<'r>(
+    len: usize,
+    weights: &[(usize, Option<TypographyWeight>)],
+    inks: &'r [InkRun],
+) -> Vec<(
+    std::ops::Range<usize>,
+    Option<TypographyWeight>,
+    Option<&'r InkRun>,
+)> {
+    let mut cuts: Vec<usize> = Vec::with_capacity(weights.len() + inks.len() + 1);
+    let mut at = 0usize;
+    for (n, _) in weights {
+        at = at.saturating_add(*n).min(len);
+        cuts.push(at);
+    }
+    at = 0;
+    for run in inks {
+        at = at.saturating_add(run.len).min(len);
+        cuts.push(at);
+    }
+    cuts.push(len);
+    cuts.sort_unstable();
+    cuts.dedup();
+    // The run covering byte `byte` of a list, by walking its cumulative ends.
+    fn covering<T>(list: &[T], len_of: impl Fn(&T) -> usize, byte: usize) -> Option<&T> {
+        let mut end = 0usize;
+        list.iter().find(|item| {
+            end = end.saturating_add(len_of(item));
+            byte < end
+        })
+    }
+    let mut out = Vec::with_capacity(cuts.len());
+    let mut start = 0usize;
+    for cut in cuts {
+        if cut > start {
+            let weight = covering(weights, |w| w.0, start).and_then(|w| w.1);
+            let ink = covering(inks, |r| r.len, start);
+            out.push((start..cut, weight, ink));
+            start = cut;
+        }
+    }
+    out
 }
 
 /// The byte offset in `galley`'s own text nearest the local position `at`.
@@ -842,6 +932,17 @@ impl ContentMeasure for GalleyShaper {
         }
     }
 
+    fn fragments(&mut self, req: &TextRequest<'_>, range: std::ops::Range<usize>) -> Vec<Rect> {
+        // The galley `text` measured, so the rectangles are the glyphs that
+        // will be painted: the painter shapes the same request with its ink
+        // and ink moves no glyph.
+        let galley = self.galley(req);
+        selection_rects(&galley, &range)
+            .into_iter()
+            .map(|r| Rect::new(r.min.x, r.min.y, r.width(), r.height()))
+            .collect()
+    }
+
     fn image(&mut self, source: &str, _proposal: SizeProposal) -> Size {
         // No image loader is wired yet. Returning zero is the honest answer —
         // an invented size would reserve space for a picture that will never
@@ -954,6 +1055,10 @@ impl ContentMeasure for HostedContent<'_> {
         self.shaper.text(req)
     }
 
+    fn fragments(&mut self, req: &TextRequest<'_>, range: std::ops::Range<usize>) -> Vec<Rect> {
+        self.shaper.fragments(req, range)
+    }
+
     fn image(&mut self, source: &str, proposal: SizeProposal) -> Size {
         // A registered picture takes the room its pixels take, shrunk to
         // the offer ([`crate::image::measure`]). An unregistered source
@@ -1042,6 +1147,7 @@ mod tests {
             wrap,
             max_lines: None,
             available_width: width,
+            runs: gorgon_petra::layout::TextRuns::Plain,
         }
     }
 
@@ -1787,6 +1893,118 @@ mod tests {
         let regular = baseline(&mut s, "typography.body-compact");
         let medium = baseline(&mut s, "typography.heading-sm");
         assert_eq!(regular, medium, "regular {regular:?} medium {medium:?}");
+    }
+
+    /// A `strong` run: the measured width and the painted width agree, and
+    /// both are the emphasis face's, wider than the same words at regular.
+    ///
+    /// Layout measures through `ContentMeasure::text` with the tree's runs
+    /// and the painter shapes through `galley_runs` with the frame's runs
+    /// plus its inks. Falsify by dropping `weights` from the galley's
+    /// sections: the bold measurement equals the regular one.
+    #[test]
+    fn a_bold_run_measures_what_it_paints_and_is_wider_than_regular() {
+        use gorgon_petra::frame::placement::TextRunPaint;
+        use gorgon_petra::layout::TextRuns;
+        use gorgon_petra::tree::TextRun;
+        let h = Headless::new();
+        crate::fonts::install_design_system(&h.0);
+        pass(&h.0);
+        let mut s = h.shaper_with(Typography::from_theme(
+            &dark(),
+            &crate::fonts::design_system_faces(),
+        ));
+        let text = "plain strong plain";
+        let tree = [
+            TextRun {
+                len: 6,
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 6,
+                weight: Some(TypographyWeight::Medium),
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 6,
+                ..TextRun::default()
+            },
+        ];
+        let frame: Vec<TextRunPaint> = tree
+            .iter()
+            .map(|r| TextRunPaint {
+                len: r.len,
+                foreground: None,
+                underline: false,
+                background: None,
+                weight: r.weight,
+            })
+            .collect();
+        let at = |runs| TextRequest {
+            style: Some("typography.body"),
+            runs,
+            ..req(text, None, TextWrap::Wrap)
+        };
+        let regular = s.text(&at(TextRuns::Plain)).size.w;
+        let measured = s.text(&at(TextRuns::Tree(&tree))).size.w;
+        let inks = [
+            InkRun::plain(6, None),
+            InkRun::plain(6, Some(Color32::RED)),
+            InkRun::plain(6, None),
+        ];
+        let painted = s
+            .galley_runs(&at(TextRuns::Frame(&frame)), &inks)
+            .rect
+            .width();
+        assert!(
+            (measured - painted).abs() < 1e-3,
+            "measured {measured} and painted {painted} must be one width"
+        );
+        assert!(
+            measured > regular + 0.5,
+            "the strong stretch must be set in its own face: {measured} vs regular {regular}"
+        );
+    }
+
+    /// A run list that names no weight shapes the plain string: same key,
+    /// same galley, so no rect on any existing page moves.
+    #[test]
+    fn a_run_list_without_weight_shapes_the_plain_string() {
+        use gorgon_petra::layout::TextRuns;
+        use gorgon_petra::tree::TextRun;
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let tree = [TextRun {
+            len: 4,
+            underline: true,
+            ..TextRun::default()
+        }];
+        let plain = s.galley(&req("text", None, TextWrap::Wrap));
+        let ruled = s.galley(&TextRequest {
+            runs: TextRuns::Tree(&tree),
+            ..req("text", None, TextWrap::Wrap)
+        });
+        assert!(Arc::ptr_eq(&plain, &ruled), "one key, one galley");
+    }
+
+    /// A link's fragments are the painted glyphs' rows: what
+    /// `selection_rects` reads off the galley the painter draws.
+    #[test]
+    fn fragments_are_the_painted_rows_of_the_range() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let request = req("alpha beta gamma delta", Some(60.0), TextWrap::Wrap);
+        let rows = s.text(&request).lines;
+        assert!(rows > 1, "the request must wrap for this to mean anything");
+        let range = 6..16;
+        let fragments = s.fragments(&request, range.clone());
+        let galley = s.galley(&request);
+        let want: Vec<gorgon_petra::geom::Rect> = super::selection_rects(&galley, &range)
+            .into_iter()
+            .map(|r| gorgon_petra::geom::Rect::new(r.min.x, r.min.y, r.width(), r.height()))
+            .collect();
+        assert_eq!(fragments, want);
+        assert!(fragments.len() >= 2, "`beta gamma` wraps: {fragments:?}");
     }
 
     #[test]

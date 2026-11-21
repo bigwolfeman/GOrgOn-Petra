@@ -1,8 +1,9 @@
 //! Text measurement, wrapping, and truncation.
 //!
 //! A `text` node is a leaf (`layout/leaf.rs` is the pattern this follows):
-//! [`measure`] answers a size, [`place`] pushes exactly one [`Placement`] and
-//! no children. The one thing that makes text different from the other leaf
+//! [`measure`] answers a size, and [`place`] pushes one [`Placement`] for the
+//! node and, under it, one for each link run it carries (`place_links`): a
+//! link's words are part of the paragraph and also a control of their own. The one thing that makes text different from the other leaf
 //! kinds is that its truncation is a fact the digest must carry
 //! (`contracts/frame-identity.md` §3) and the semantic tree must audit
 //! (`contracts/semantic-tree.md`: "every `truncated` flag corresponds to a
@@ -17,8 +18,12 @@
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Rect, Size};
-use crate::layout::{LayoutCtx, SizeProposal, Slot, TextRequest, semantics_of};
-use crate::tree::{KeyPath, TextProps, ViewNode};
+use crate::layout::{LayoutCtx, SizeProposal, Slot, TextRequest, TextRuns, semantics_of};
+use crate::token::FocusRing;
+use crate::tree::{
+    Behaviour, FocusFigure, Intent, Interaction, KeyPath, NodeKind, Phase, Role, TextProps,
+    ViewNode,
+};
 
 /// Build the shaper request a text node's resolved props describe, offering
 /// `available_width` (`None` for an open probe).
@@ -29,6 +34,7 @@ fn text_request<'a>(props: &TextProps<'a>, available_width: Option<f32>) -> Text
         wrap: props.wrap,
         max_lines: props.max_lines,
         available_width,
+        runs: TextRuns::Tree(props.runs),
     }
 }
 
@@ -144,12 +150,13 @@ pub fn place(
 
     let id = path.id();
     let semantics = semantics_of(node, &id, ctx.state);
-    sink.push(Placement {
+    let clip = slot.clip.intersect(inked(slot.rect, measurement.ink));
+    let index = sink.push(Placement {
         id,
         kind: node.kind,
         rect: slot.rect,
         z: slot.z,
-        clip: slot.clip.intersect(inked(slot.rect, measurement.ink)),
+        clip,
         opacity: slot.opacity,
         paint: PaintState {
             content_hash: crate::frame::digest::hash_text(props.text),
@@ -163,6 +170,106 @@ pub fn place(
         semantics,
         parent: None,
     });
+    place_links(node, &props, &req, ctx, path, slot, clip, index, sink);
+}
+
+/// What a link run answers to, the same set `component::link` declares:
+/// `Hover` so the pointer can rest on it, `Click` and `Focus` so it is
+/// operable both ways.
+const LINK_INTERACTIONS: &[Interaction] =
+    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// A link activates on release, as `component::link` does (spec 010).
+const LINK_BEHAVIOUR: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
+
+/// One placement under the text's for each [`crate::tree::TextRun::link`],
+/// in run order, which is reading order: Tab visits them after the text
+/// itself and before anything after it.
+///
+/// The host says where the words landed ([`super::ContentMeasure::fragments`]),
+/// against the request this frame placed the text with, so the rectangles are
+/// the painted glyphs'. A link cut off by a line cap or an ellipsis has no
+/// fragments and gets no placement: what is not drawn is neither focusable
+/// nor hit.
+#[allow(clippy::too_many_arguments)]
+fn place_links(
+    node: &ViewNode,
+    props: &TextProps<'_>,
+    req: &super::TextRequest<'_>,
+    ctx: &mut LayoutCtx<'_>,
+    path: &mut KeyPath,
+    slot: Slot,
+    clip: Rect,
+    index: usize,
+    sink: &mut dyn PlacementSink,
+) {
+    if node.kind != NodeKind::Text || props.runs.iter().all(|run| run.link.is_none()) {
+        return;
+    }
+    sink.enter(index);
+    let mut at = 0usize;
+    for run in props.runs {
+        let range = at..at + run.len;
+        at = range.end;
+        let Some(link) = &run.link else { continue };
+        // Widened by the focus ring's two bands on each side. The ring is a
+        // `Border`, drawn inside the rect, and the words' own box is tight
+        // to the first and last glyph: the ring cut the letters it marked.
+        let pad = FocusRing::STANDARD.stroke + FocusRing::STANDARD.halo;
+        let fragments: Vec<Rect> = ctx
+            .content
+            .fragments(req, range.clone())
+            .into_iter()
+            .map(|f| Rect::new(f.x - pad, f.y, f.w + 2.0 * pad, f.h))
+            .collect();
+        let Some(bounds) = fragments.iter().copied().reduce(Rect::union) else {
+            continue;
+        };
+        let words = props.text.get(range).unwrap_or_default();
+        path.push(link.key.clone());
+        let id = path.id();
+        path.pop();
+        let mut run_node = ViewNode::new(NodeKind::Text, link.key.clone())
+            .interactive(Role::Link, words, LINK_INTERACTIONS)
+            .with_behaviour(LINK_BEHAVIOUR)
+            // A closed outline on the words' own box, Carbon's inline link
+            // focus (`outline: 1px solid $focus`). Not `component::link`'s
+            // `Sides`: in running text a bar beside the link lands on the
+            // neighbouring word, and not `BarUnder`, which would be a second
+            // line under an underlined run.
+            .with_focus_figure(FocusFigure::Border);
+        run_node.semantics.value = link.target.clone();
+        run_node.semantics.disabled = node.semantics.disabled;
+        let mut semantics = semantics_of(&run_node, &id, ctx.state);
+        semantics.fragments = fragments
+            .iter()
+            .map(|f| f.translate(-bounds.x, -bounds.y))
+            .collect();
+        let at = sink.push(Placement {
+            id,
+            kind: NodeKind::Text,
+            rect: bounds.translate(slot.rect.x, slot.rect.y),
+            z: slot.z,
+            clip,
+            opacity: slot.opacity,
+            paint: PaintState {
+                content_hash: crate::frame::digest::hash_text(words),
+                truncated: false,
+                overflowed: false,
+                token_revision: ctx.theme_rev,
+                paint_hash: 0,
+            },
+            semantics,
+            parent: None,
+        });
+        // The text's offer: it is what decided where the words landed, so
+        // it is what an incremental pass compares before reusing this.
+        sink.note_slot(at, slot);
+    }
+    sink.leave();
 }
 
 /// `rect` grown by the ink a shaped run draws above and below its box (see

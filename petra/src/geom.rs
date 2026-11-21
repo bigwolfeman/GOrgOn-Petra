@@ -180,6 +180,16 @@ impl Rect {
         Self::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
     }
 
+    /// The smallest rect holding both.
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Self::new(x, y, right - x, bottom - y)
+    }
+
     /// Move by a delta.
     #[must_use]
     pub fn translate(self, dx: f32, dy: f32) -> Self {

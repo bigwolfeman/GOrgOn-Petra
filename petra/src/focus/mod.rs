@@ -629,6 +629,11 @@ pub fn marked_rect(placements: &[Placement], shown: usize, figure: FocusFigure) 
     let Some(node) = placements.get(shown) else {
         return Rect::ZERO;
     };
+    // A link run that wrapped marks the line it starts on: a ring around its
+    // bounding box would box every word between its two ends.
+    if let Some(first) = node.semantics.fragments.first() {
+        return first.translate(node.rect.x, node.rect.y);
+    }
     if !figure.marks_the_label() {
         return node.rect;
     }

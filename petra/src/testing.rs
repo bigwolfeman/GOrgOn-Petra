@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
-use crate::geom::{Insets, Scale, Size};
+use crate::geom::{Insets, Rect, Scale, Size};
 use crate::layout::{
     AnchorRects, ContentMeasure, InkOverflow, LayoutCtx, LayoutState, MeasureCache, RowSource,
     ScrollStack, SizeProposal, TextMeasurement, TextRequest,
@@ -392,6 +392,43 @@ impl ContentMeasure for MonoContent {
         }
     }
 
+    /// The same arithmetic [`Self::text`] wraps by: `per_line` characters
+    /// a line, broken anywhere, cut at the line cap; one line for `Clip` and
+    /// `Ellipsis`. Weight is ignored, as it is in `text`.
+    fn fragments(&mut self, req: &TextRequest<'_>, range: Range<usize>) -> Vec<Rect> {
+        let char_at = |byte: usize| req.text[..byte.min(req.text.len())].chars().count();
+        let (from, to) = (char_at(range.start), char_at(range.end));
+        if from >= to {
+            return Vec::new();
+        }
+        let chars = req.text.chars().count();
+        let per_line = match req.available_width {
+            None => chars.max(1),
+            Some(w) => ((w / self.char_w).floor().max(0.0) as usize).max(1),
+        };
+        let lines = match (req.wrap, req.available_width) {
+            (_, None) | (TextWrap::Ellipsis | TextWrap::Clip, _) => 1,
+            (TextWrap::Wrap, Some(_)) => {
+                let needed = chars.div_ceil(per_line).max(1);
+                req.max_lines.map_or(needed, |cap| needed.min(cap))
+            }
+        };
+        let mut out = Vec::new();
+        for line in 0..lines {
+            let (start, end) = (line * per_line, (line + 1) * per_line);
+            let (a, b) = (from.max(start), to.min(end));
+            if a < b {
+                out.push(Rect::new(
+                    (a - start) as f32 * self.char_w,
+                    line as f32 * self.line_h,
+                    (b - a) as f32 * self.char_w,
+                    self.line_h,
+                ));
+            }
+        }
+        out
+    }
+
     fn image(&mut self, _source: &str, proposal: SizeProposal) -> Size {
         self.calls += 1;
         let _ = proposal;
@@ -726,6 +763,7 @@ mod tests {
             wrap,
             max_lines: None,
             available_width: width,
+            runs: crate::layout::TextRuns::Plain,
         }
     }
 

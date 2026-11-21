@@ -108,6 +108,10 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         // control concealed because the pointer is elsewhere is still there
         // for a screen reader, which must list it the same either way.
         concealed: _,
+        // Held out: a node's bounds are its rect, which is the fragments'
+        // bounding box, and that is the one rectangle AccessKit takes. The
+        // fragments decide what the pointer hits.
+        fragments: _,
     } = &placement.semantics;
 
     let mut actions: Vec<Interaction> = actions.clone();

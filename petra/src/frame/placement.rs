@@ -256,6 +256,18 @@ pub struct PlacementSemantics {
     /// [`Self::raw_claim`] is gathered by walking placements for a raw
     /// claim on the focus path — has a `PetrifiedFrame` in hand and no tree.
     pub bindings: Vec<Binding>,
+    /// The rectangles this node is, when it is not its whole rect: one per
+    /// line a link run's words wrap onto ([`crate::tree::TextRun::link`]),
+    /// relative to [`Placement::rect`]'s origin so a translation of the rect
+    /// (a scroll, a moving parent) carries them. The rect is their bounding
+    /// box. Empty for every other node, which is its rect.
+    ///
+    /// The engine cannot shape, so these come from the host through
+    /// [`crate::layout::ContentMeasure::fragments`] (the U-09 delegation),
+    /// the same way a run's size does. [`Placement::contains`] reads them, so
+    /// a pointer between two lines of one link, over other words, does not
+    /// hit it. Geometry, and in the digest with the rect.
+    pub fragments: Vec<Rect>,
 }
 
 /// One node's final geometry and paint state for one frame.
@@ -290,6 +302,19 @@ impl Placement {
     #[must_use]
     pub fn is_visible(&self) -> bool {
         self.rect.overlaps(self.clip)
+    }
+
+    /// Whether `pos` is on this node: inside its rect, and inside one of its
+    /// [`PlacementSemantics::fragments`] when it has any.
+    #[must_use]
+    pub fn contains(&self, pos: crate::geom::Point) -> bool {
+        self.rect.contains(pos)
+            && (self.semantics.fragments.is_empty()
+                || self
+                    .semantics
+                    .fragments
+                    .iter()
+                    .any(|f| f.translate(self.rect.x, self.rect.y).contains(pos)))
     }
 }
 
@@ -338,6 +363,9 @@ pub struct TextRunPaint {
     pub underline: bool,
     /// Band token for this run ([`crate::tree::TextRun::background`]).
     pub background: Option<String>,
+    /// [`crate::tree::TextRun::weight`]. A shaping input, so the painter
+    /// hands it back to the shaper in [`crate::layout::TextRequest::runs`].
+    pub weight: Option<crate::token::TypographyWeight>,
 }
 
 /// The pointer a surface draws back at the node it is anchored to.
@@ -456,6 +484,15 @@ pub struct PaintContent {
     /// galley it is about to draw, so handing it rectangles would mean
     /// shaping the same string twice and hoping the two agreed. A range is
     /// what the engine can say without a font.
+    ///
+    /// **One delegation (2026-11-20).** A link run
+    /// ([`crate::tree::TextRun::link`]) is a placement of its own, and a
+    /// placement needs a rect. The engine asks the host where the link's
+    /// bytes landed ([`crate::layout::ContentMeasure::fragments`]), from the
+    /// same shaping the measurement used, and keeps the answer as
+    /// [`PlacementSemantics::fragments`]. That is the only glyph geometry
+    /// that crosses U-09, and it crosses as rectangles. A selection stays a
+    /// range.
     ///
     /// Byte offsets, ordered, and clamped to the painted string's own
     /// length: a selection made against one frame's string must never be a

@@ -171,6 +171,7 @@ fn accesskit_role(role: &Role) -> (AkRole, Option<String>) {
         Role::Table => (AkRole::Table, None),
         Role::Row => (AkRole::Row, None),
         Role::Cell => (AkRole::Cell, None),
+        Role::Link => (AkRole::Link, None),
         Role::Custom(name) => (AkRole::GenericContainer, Some(name.clone())),
     }
 }

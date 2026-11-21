@@ -3715,6 +3715,7 @@ impl<A: App> Host<A> {
             wrap: text.wrap,
             max_lines: text.max_lines,
             available_width: Some((placement.rect.w - 2.0 * inset_x).max(0.0)),
+            runs: gorgon_petra::layout::TextRuns::Frame(&text.runs),
         };
         let galley = shaper.galley(&request);
         // The painter centres a field's galley in the chrome; a run's galley
