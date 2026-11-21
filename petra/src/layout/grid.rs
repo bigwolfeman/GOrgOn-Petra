@@ -700,6 +700,7 @@ struct Declared {
 /// rather than carrying all three in one body.
 fn spend_declared(
     tracks: &[TrackSize],
+    floors: &[f32],
     budget: f32,
     natural: &mut impl FnMut(usize, Proposal) -> f32,
 ) -> Declared {
@@ -709,24 +710,20 @@ fn spend_declared(
         weight_total: 0.0,
         overflowed: false,
     };
-    // What the weight tracks cannot do without: their content's `Zero`
-    // answer, a declared minimum included. A fit-content track is clamped
-    // to the budget less this, so a long fit-content track (a list in a
-    // scroll) leaves a weighted sibling its minimum instead of taking the
-    // whole axis — the same reservation a stack makes for lower-priority
-    // children. Asked only when both kinds share the axis.
-    let competing = tracks.iter().any(|t| matches!(t, TrackSize::FitContent))
-        && tracks.iter().any(|t| matches!(t, TrackSize::Weight { .. }));
-    let weight_floor: f32 = if competing {
-        tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| matches!(t, TrackSize::Weight { .. }))
-            .map(|(i, _)| natural(i, Proposal::Zero).max(0.0))
-            .sum()
-    } else {
-        0.0
-    };
+    // What the weight tracks' cells declare they cannot do without
+    // (`floors`, from each cell's own `constraints.min`). A fit-content track
+    // is clamped to the budget less this, so a long fit-content track (a
+    // list in a scroll) leaves a floored weighted sibling its floor instead
+    // of taking the whole axis, the same reservation a stack makes for
+    // lower-priority children. Only a declared floor: a weight track is the
+    // leftover, and reserving its content minimum took a pagination bar's
+    // padded range caption out of its page controls and cut `next` off.
+    let weight_floor: f32 = tracks
+        .iter()
+        .zip(floors.iter().chain(std::iter::repeat(&0.0)))
+        .filter(|(t, _)| matches!(t, TrackSize::Weight { .. }))
+        .map(|(_, floor)| floor.max(0.0))
+        .sum();
     for (i, track) in tracks.iter().enumerate() {
         match track {
             TrackSize::Fixed { value } => {
@@ -762,6 +759,7 @@ fn spend_declared(
 /// assuming one.
 fn distribute_tracks(
     tracks: &[TrackSize],
+    floors: &[f32],
     spacing: f32,
     container_probe: Proposal,
     mut natural: impl FnMut(usize, Proposal) -> f32,
@@ -827,6 +825,7 @@ fn distribute_tracks(
         overflowed,
     } = spend_declared(
         tracks,
+        floors,
         (avail - reserved(spacing, n)).max(0.0),
         &mut natural,
     );
@@ -962,9 +961,27 @@ fn resolve_columns(
     container_probe: Proposal,
     flow: &Flow,
 ) -> Tracks {
-    distribute_tracks(tracks, spacing, container_probe, |col, probe| {
+    let floors = declared_floors(node, flow, Axis::Horizontal, tracks.len());
+    distribute_tracks(tracks, &floors, spacing, container_probe, |col, probe| {
         column_natural_width(node, ctx, path, col, flow, spacing, probe)
     })
+}
+
+/// Each track's declared floor on `axis`: the largest `constraints.min` a
+/// cell seated in that track alone declares. A spanning cell's floor is not
+/// split across tracks; it is the cell's own business inside its run.
+fn declared_floors(node: &ViewNode, flow: &Flow, axis: Axis, n: usize) -> Vec<f32> {
+    let mut floors = vec![0.0_f32; n];
+    for (i, child) in node.children.iter().enumerate() {
+        let (start, count) = flow.run(i).on(axis);
+        if count != 1 {
+            continue;
+        }
+        if let (Some(slot), Some(min)) = (floors.get_mut(start), child.constraints.axis(axis).min) {
+            *slot = slot.max(min.max(0.0));
+        }
+    }
+    floors
 }
 
 /// Row heights for `tracks` against `container_probe` (the container's
@@ -977,9 +994,14 @@ fn resolve_rows(
     container_probe: Proposal,
     rows: RowContext<'_>,
 ) -> Tracks {
-    distribute_tracks(tracks, rows.row_spacing, container_probe, |row, probe| {
-        row_natural_height(node, ctx, path, row, &rows, probe)
-    })
+    let floors = declared_floors(node, rows.flow, Axis::Vertical, tracks.len());
+    distribute_tracks(
+        tracks,
+        &floors,
+        rows.row_spacing,
+        container_probe,
+        |row, probe| row_natural_height(node, ctx, path, row, &rows, probe),
+    )
 }
 
 /// Everything sizing a row track needs beyond the node and the probe.
@@ -1815,7 +1837,7 @@ mod tests {
             TrackSize::Weight { weight: 1.0 },
             TrackSize::Weight { weight: 2.0 },
         ];
-        let widths = distribute_tracks(&tracks, 10.0, Proposal::Exact(420.0), |_, _| 0.0);
+        let widths = distribute_tracks(&tracks, &[], 10.0, Proposal::Exact(420.0), |_, _| 0.0);
         assert_eq!(widths.extents, vec![100.0, 100.0, 200.0]);
         assert!(!widths.truncated, "400 units plus 20 of gap fits in 420");
     }
@@ -1859,7 +1881,7 @@ mod tests {
             TrackSize::Fixed { value: 500.0 },
             TrackSize::Weight { weight: 1.0 },
         ];
-        let widths = distribute_tracks(&tracks, 0.0, Proposal::Exact(100.0), |_, _| 0.0);
+        let widths = distribute_tracks(&tracks, &[], 0.0, Proposal::Exact(100.0), |_, _| 0.0);
         // The weight track collapses to zero rather than going negative — the
         // property this test was written for. The fixed track is now also cut
         // to the offer: it used to keep its declared 500 in a 100-unit
