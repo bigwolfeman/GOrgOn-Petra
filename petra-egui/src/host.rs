@@ -1892,6 +1892,20 @@ impl<A: App> Host<A> {
         // value on screen and in the semantic tree for the rest of the
         // flight.
         let changes = self.app.take_changes();
+        // Theme and scale are global inputs to every measurement, so a change
+        // to either invalidates wholesale; content changes are the
+        // application's change set, applied here so no host wiring can skip
+        // the ancestor walk it requires. Applied before the reuse check and
+        // on every pass that read the set: reading it consumed it, so a
+        // flight pass that paints the last picture and drops the set would
+        // leave the measurements it names standing for every later frame. A
+        // contribution's regrown component is named only by such a set (its
+        // authored tree does not move), and an accordion body mounted during
+        // a caret flight then laid out inside its collapsed item's cached
+        // height, at zero height, for good.
+        self.cache
+            .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
+        self.cache.apply(&changes);
         let mut authored = None;
         if self.can_reuse_frame(&viewport, had_input) {
             match self.flight_view(&changes) {
@@ -1902,14 +1916,6 @@ impl<A: App> Host<A> {
                 Some(changed) => authored = Some(changed),
             }
         }
-
-        // Theme and scale are global inputs to every measurement, so a change
-        // to either invalidates wholesale; content changes are the
-        // application's change set, applied here so no host wiring can skip
-        // the ancestor walk it requires.
-        self.cache
-            .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
-        self.cache.apply(&changes);
 
         // The application's tree, then every contributed surface spliced into
         // it. In this order and not the other: a contribution mounts *into* a
@@ -6962,6 +6968,39 @@ mod tests {
         assert!(
             host.frame().expect("a frame").seq > seq,
             "a changed view under the same blanket set is petrified"
+        );
+    }
+
+    /// A change set read on a flight pass that paints the last picture still
+    /// invalidates the measurements it names. Reading the set consumed it, so
+    /// a pass that dropped it left those measurements standing for every
+    /// later frame: the lua gallery's accordion body, mounted by a
+    /// contribution's regrowth while the caret flew to its header, laid out
+    /// inside the collapsed item's cached height at zero height for good
+    /// (`the_ported_accordion_mounts_bodies_by_key_from_the_table`, 60 of
+    /// 60). Falsify by applying the set after the reuse check again: the
+    /// sentinel survives the flight pass.
+    #[test]
+    fn a_change_set_read_on_a_flight_pass_still_invalidates_measurements() {
+        let (ctx, mut host) = construct(Demo {
+            always_all: true,
+            ..Demo::default()
+        });
+        settle(&ctx, &mut host, 4);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert!(host.caret().is_moving(), "Tab must start a hop");
+        let seq = host.frame().expect("a frame").seq;
+        host.cache.insert(measure_key("/root"), Size::ZERO);
+        step(&ctx, &mut host, RawInput::default());
+        assert!(host.caret().is_moving(), "the hop must still be flying");
+        assert_eq!(
+            host.frame().expect("a frame").seq,
+            seq,
+            "the pass flew the caret over the last picture"
+        );
+        assert!(
+            host.cache.peek(&measure_key("/root")).is_none(),
+            "the change set the flight pass read must reach the measure cache"
         );
     }
 
