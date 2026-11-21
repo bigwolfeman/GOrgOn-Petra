@@ -22,6 +22,17 @@
 //! removed from the tree — they can become focusable again next frame
 //! without changing identity (data-model.md §7).
 //!
+//! # A tree is one Tab stop
+//!
+//! A placement whose role roves ([`crate::tree::Role::roves`]: a `tree`) is
+//! one stop in Tab order, as Carbon's tree view is (roving tabindex). Its
+//! focusable descendants stay focusable, so the pointer, a programmatic
+//! move and the application's arrow keys reach every row, but Tab and
+//! Shift+Tab visit one of them: the focused row when focus is inside the
+//! tree, else the selected row, else the first. From inside, Tab leaves the
+//! tree. Every traversal question here (`next`, `previous`, `first`,
+//! `last`, [`FocusTree::reachable`]) collapses the group the same way.
+//!
 //! # Overlay scopes
 //!
 //! A `surface` placement declaring [`InputPolicy::Block`] (a modal) opens a
@@ -113,6 +124,17 @@ pub struct FocusTree {
     current: Option<String>,
     /// The node focus left because it vanished, while it may still come back.
     provisional: Option<Provisional>,
+    /// For each id in `order` inside a roving group: the group's id and
+    /// whether the row is selected. Traversal collapses each group to one
+    /// stop (the module doc's "A tree is one Tab stop").
+    rove: BTreeMap<String, Rove>,
+}
+
+/// A focusable's place in a roving group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Rove {
+    group: String,
+    selected: bool,
 }
 
 /// A focused node that vanished: its id and the blocking surfaces it sat in,
@@ -165,14 +187,16 @@ impl FocusTree {
         placements: &[Placement],
         surface_scopes: &BTreeMap<String, InputPolicy>,
     ) -> Self {
-        let (order, scope_chain) = index(placements, surface_scopes);
-        let current = order.first().cloned();
-        Self {
+        let (order, scope_chain, rove) = index(placements, surface_scopes);
+        let mut tree = Self {
             order,
             scope_chain,
-            current,
+            current: None,
             provisional: None,
-        }
+            rove,
+        };
+        tree.current = tree.candidates().first().map(|id| (*id).to_owned());
+        tree
     }
 
     /// Rebuild against a new frame's placements, carrying `self.current`
@@ -184,7 +208,7 @@ impl FocusTree {
         placements: &[Placement],
         surface_scopes: &BTreeMap<String, InputPolicy>,
     ) -> Self {
-        let (order, scope_chain) = index(placements, surface_scopes);
+        let (order, scope_chain, rove) = index(placements, surface_scopes);
         let mut provisional = self.provisional.clone();
         let mut current = if self
             .current
@@ -231,6 +255,7 @@ impl FocusTree {
             scope_chain,
             current,
             provisional,
+            rove,
         }
     }
 
@@ -279,7 +304,7 @@ impl FocusTree {
         dir: isize,
     ) -> Option<String> {
         let scope = self.active_scope();
-        let candidates: Vec<&str> = placements
+        let candidates: Vec<(&str, Option<Rove>)> = placements
             .iter()
             .enumerate()
             .filter(|(_, p)| is_focusable(p))
@@ -289,9 +314,10 @@ impl FocusTree {
                     .map(String::as_str)
                     == scope
             })
-            .map(|(_, p)| p.id.as_str())
+            .map(|(idx, p)| (p.id.as_str(), rove_of(idx, placements)))
             .collect();
-        step_over(&candidates, self.current.as_deref(), dir)
+        let stops = collapse(&candidates, self.current.as_deref());
+        step_over(&stops, self.current.as_deref(), dir)
     }
 
     /// The blocking surface `current` is trapped inside, or `None` when focus
@@ -382,7 +408,8 @@ impl FocusTree {
     /// derived from itself.
     fn candidates(&self) -> Vec<&str> {
         let scope = self.active_scope();
-        self.order
+        let in_scope: Vec<(&str, Option<Rove>)> = self
+            .order
             .iter()
             .filter(|id| {
                 let nearest = self
@@ -392,8 +419,9 @@ impl FocusTree {
                     .map(String::as_str);
                 nearest == scope
             })
-            .map(String::as_str)
-            .collect()
+            .map(|id| (id.as_str(), self.rove.get(id).cloned()))
+            .collect();
+        collapse(&in_scope, self.current.as_deref())
     }
 
     fn step(&mut self, dir: isize) {
@@ -411,6 +439,70 @@ impl FocusTree {
 /// focusable node further out, on screen or not".
 fn is_focusable(placement: &Placement) -> bool {
     placement.semantics.actions.contains(&Interaction::Focus) && !placement.semantics.disabled
+}
+
+/// `candidates` with every roving group cut to its one stop: the member
+/// that is `current`, else the first selected member, else the first.
+/// Order is kept; an id in no group is kept as it is.
+fn collapse<'a>(candidates: &[(&'a str, Option<Rove>)], current: Option<&str>) -> Vec<&'a str> {
+    if candidates.iter().all(|(_, rove)| rove.is_none()) {
+        return candidates.iter().map(|(id, _)| *id).collect();
+    }
+    // Per group, the best member so far and its rank: 0 is `current`,
+    // 1 a selected row, 2 any other. The first of equal ranks wins.
+    let mut stop: BTreeMap<&str, (&str, u8)> = BTreeMap::new();
+    for (id, rove) in candidates {
+        let Some(rove) = rove else { continue };
+        let rank = if Some(*id) == current {
+            0
+        } else if rove.selected {
+            1
+        } else {
+            2
+        };
+        match stop.get(rove.group.as_str()) {
+            Some((_, held)) if *held <= rank => {}
+            _ => {
+                stop.insert(rove.group.as_str(), (*id, rank));
+            }
+        }
+    }
+    candidates
+        .iter()
+        .filter(|(id, rove)| {
+            rove.as_ref()
+                .is_none_or(|rove| stop.get(rove.group.as_str()).map(|(id, _)| id) == Some(id))
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// The roving group `placements[idx]` is in: its nearest ancestor whose
+/// role roves, walked up `parent` and bounded like [`blocking_scopes`].
+fn rove_of(idx: usize, placements: &[Placement]) -> Option<Rove> {
+    let node = placements.get(idx)?;
+    let mut cursor = node.parent;
+    let mut steps = 0usize;
+    while let Some(p) = cursor {
+        let ancestor = placements.get(p)?;
+        if ancestor
+            .semantics
+            .role
+            .as_ref()
+            .is_some_and(crate::tree::Role::roves)
+        {
+            return Some(Rove {
+                group: ancestor.id.clone(),
+                selected: node.semantics.selected,
+            });
+        }
+        steps += 1;
+        if steps > placements.len() {
+            return None;
+        }
+        cursor = ancestor.parent;
+    }
+    None
 }
 
 /// The id at `current`'s position in `candidates`, stepped by `dir` and
@@ -433,12 +525,18 @@ fn step_over(candidates: &[&str], current: Option<&str>, dir: isize) -> Option<S
 }
 
 /// Build `(order, scope_chain)` from one frame's placements.
+#[allow(clippy::type_complexity)]
 fn index(
     placements: &[Placement],
     surface_scopes: &BTreeMap<String, InputPolicy>,
-) -> (Vec<String>, BTreeMap<String, Vec<String>>) {
+) -> (
+    Vec<String>,
+    BTreeMap<String, Vec<String>>,
+    BTreeMap<String, Rove>,
+) {
     let mut order = Vec::new();
     let mut scope_chain = BTreeMap::new();
+    let mut rove = BTreeMap::new();
     for (idx, placement) in placements.iter().enumerate() {
         if !is_focusable(placement) || !placement.is_visible() {
             continue;
@@ -448,8 +546,11 @@ fn index(
             placement.id.clone(),
             blocking_scopes(idx, placements, surface_scopes),
         );
+        if let Some(group) = rove_of(idx, placements) {
+            rove.insert(placement.id.clone(), group);
+        }
     }
-    (order, scope_chain)
+    (order, scope_chain, rove)
 }
 
 /// Every `Block`-policy surface scope `placements[idx]` is inside, nearest

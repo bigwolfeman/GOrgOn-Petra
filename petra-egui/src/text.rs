@@ -16,7 +16,7 @@ use egui::{Color32, Context, FontFamily, FontId, Galley};
 use gorgon_petra::cache::LruCache;
 use gorgon_petra::geom::{Rect, Size};
 use gorgon_petra::layout::{
-    ContentMeasure, InkOverflow, SizeProposal, TextMeasurement, TextRequest,
+    ContentMeasure, InkOverflow, RunFace, SizeProposal, TextMeasurement, TextRequest,
 };
 use gorgon_petra::token::{Theme, TokenValue, TypographyFamily, TypographyValue, TypographyWeight};
 use gorgon_petra::tree::TextWrap;
@@ -52,17 +52,21 @@ pub struct FontFaces {
     regular: FontFamily,
     medium: FontFamily,
     bold: FontFamily,
+    /// The italic family per weight class, `Regular`, `Medium`, `Bold`.
+    /// The upright families until [`FontFaces::with_italic`] binds faces:
+    /// a stack with no italic draws an italic run upright, and
+    /// [`FontFaces::distinguishes_slant`] says so.
+    italic: [FontFamily; 3],
     mono: FontFamily,
 }
 
 impl Default for FontFaces {
     fn default() -> Self {
-        Self {
-            regular: FontFamily::Proportional,
-            medium: FontFamily::Proportional,
-            bold: FontFamily::Proportional,
-            mono: FontFamily::Monospace,
-        }
+        Self::new(
+            FontFamily::Proportional,
+            FontFamily::Proportional,
+            FontFamily::Proportional,
+        )
     }
 }
 
@@ -77,11 +81,25 @@ impl FontFaces {
     #[must_use]
     pub fn new(regular: FontFamily, medium: FontFamily, bold: FontFamily) -> Self {
         Self {
+            italic: [regular.clone(), medium.clone(), bold.clone()],
             regular,
             medium,
             bold,
             mono: FontFamily::Monospace,
         }
+    }
+
+    /// The same faces, drawing an italic run ([`gorgon_petra::tree::TextRun::italic`])
+    /// at each weight class through these families.
+    #[must_use]
+    pub fn with_italic(
+        mut self,
+        regular: FontFamily,
+        medium: FontFamily,
+        bold: FontFamily,
+    ) -> Self {
+        self.italic = [regular, medium, bold];
+        self
     }
 
     /// The same faces, drawing [`TypographyFamily::Mono`] through `family`.
@@ -112,6 +130,12 @@ impl FontFaces {
         }
     }
 
+    /// The italic family a sans run at `weight` draws through.
+    #[must_use]
+    pub fn italic(&self, weight: TypographyWeight) -> &FontFamily {
+        &self.italic[weight_index(weight)]
+    }
+
     /// Point `weight` at `family`.
     pub fn set(&mut self, weight: TypographyWeight, family: FontFamily) {
         let slot = match weight {
@@ -132,6 +156,39 @@ impl FontFaces {
     pub fn distinguishes_weight(&self) -> bool {
         self.regular != self.medium && self.medium != self.bold && self.regular != self.bold
     }
+
+    /// Whether an italic run can paint differently from an upright one at
+    /// every weight class: `false` under [`FontFaces::default`], whose stack
+    /// has no italic face.
+    #[must_use]
+    pub fn distinguishes_slant(&self) -> bool {
+        let upright = [&self.regular, &self.medium, &self.bold];
+        self.italic
+            .iter()
+            .all(|italic| upright.iter().all(|up| *up != italic))
+    }
+}
+
+/// `Regular`, `Medium`, `Bold` as 0, 1, 2: the order every per-weight array
+/// in this module is in.
+fn weight_index(weight: TypographyWeight) -> usize {
+    match weight {
+        TypographyWeight::Regular => 0,
+        TypographyWeight::Medium => 1,
+        TypographyWeight::Bold => 2,
+    }
+}
+
+/// The faces a sans style's runs can switch to: its own weight, and the
+/// upright and italic family of each weight class.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunFamilies {
+    /// The style's own weight, which a run with no weight of its own keeps.
+    pub own: TypographyWeight,
+    /// Upright families, `Regular`, `Medium`, `Bold`.
+    pub upright: [FontFamily; 3],
+    /// Italic families, same order.
+    pub italic: [FontFamily; 3],
 }
 
 /// One typography token, resolved into what egui needs to shape it.
@@ -145,18 +202,17 @@ impl FontFaces {
 ///
 /// The token's own weight is spent at construction, choosing the family in
 /// `font` through [`FontFaces`] — see that type for what the default font
-/// stack can and cannot express. [`TextStyle::weights`] keeps the other two,
-/// so a run that names a weight ([`gorgon_petra::tree::TextRun::weight`])
+/// stack can and cannot express. [`TextStyle::faces`] keeps the rest, so a
+/// run that names a weight or a slant ([`gorgon_petra::layout::RunFace`])
 /// draws in the same size, leading and tracking through its own face.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
     /// Size and family.
     pub font: FontId,
-    /// The family each weight class draws through at this style, in
-    /// `Regular`, `Medium`, `Bold` order, or `None` when a run's weight
-    /// changes nothing: a monospace style (the mono family has one face) or
-    /// a style built from a bare [`FontId`].
-    pub weights: Option<[FontFamily; 3]>,
+    /// The families a run's face draws through at this style, or `None` when
+    /// a run's weight and slant change nothing: a monospace style (the mono
+    /// family has one face) or a style built from a bare [`FontId`].
+    pub faces: Option<RunFamilies>,
     /// Distance between the bottom rows of two subsequent lines, in logical
     /// units. `None` leaves it to the font's own metrics.
     pub line_height: Option<f32>,
@@ -172,7 +228,7 @@ impl TextStyle {
     pub fn new(font: FontId) -> Self {
         Self {
             font,
-            weights: None,
+            faces: None,
             line_height: None,
             extra_letter_spacing: 0.0,
         }
@@ -191,28 +247,35 @@ impl TextStyle {
         let at = |weight| faces.family(value.family, weight).clone();
         Self {
             font: FontId::new(value.size, at(value.weight)),
-            weights: (value.family == TypographyFamily::Sans).then(|| {
-                [
+            faces: (value.family == TypographyFamily::Sans).then(|| RunFamilies {
+                own: value.weight,
+                upright: [
                     at(TypographyWeight::Regular),
                     at(TypographyWeight::Medium),
                     at(TypographyWeight::Bold),
-                ]
+                ],
+                italic: [
+                    faces.italic(TypographyWeight::Regular).clone(),
+                    faces.italic(TypographyWeight::Medium).clone(),
+                    faces.italic(TypographyWeight::Bold).clone(),
+                ],
             }),
             line_height: Some(value.line_height),
             extra_letter_spacing: value.letter_spacing,
         }
     }
 
-    /// The font a run set in `weight` draws with: this style's own font for
-    /// `None` or a style that has no weight families.
+    /// The font a run set in `face` draws with: this style's own font for
+    /// the plain face or a style that has no run families.
     #[must_use]
-    pub fn font_at(&self, weight: Option<TypographyWeight>) -> FontId {
-        match (weight, &self.weights) {
-            (Some(weight), Some(families)) => {
-                let family = match weight {
-                    TypographyWeight::Regular => &families[0],
-                    TypographyWeight::Medium => &families[1],
-                    TypographyWeight::Bold => &families[2],
+    pub fn font_at(&self, face: RunFace) -> FontId {
+        match &self.faces {
+            Some(families) if !face.is_plain() => {
+                let at = weight_index(face.weight.unwrap_or(families.own));
+                let family = if face.italic {
+                    &families.italic[at]
+                } else {
+                    &families.upright[at]
                 };
                 FontId::new(self.font.size, family.clone())
             }
@@ -378,11 +441,12 @@ struct GalleyKey {
     /// run gets its own entry: two inks over one string are two pictures and
     /// must not share a galley.
     runs: Vec<(usize, Option<u32>, bool, Option<u32>)>,
-    /// Weight runs over the text, from [`TextRequest::runs`], or empty when
-    /// no run names a weight. A shaping input: the same string with a
-    /// `strong` stretch is wider, so it is its own galley for measuring and
-    /// for painting alike, and both read it off the request.
-    weights: Vec<(usize, Option<TypographyWeight>)>,
+    /// Face runs over the text, from [`TextRequest::runs`], or empty when
+    /// every run is in the node's own face. A shaping input: the same string
+    /// with a `strong` or an italic stretch has other advances, so it is its
+    /// own galley for measuring and for painting alike, and both read it off
+    /// the request.
+    faces: Vec<(usize, RunFace)>,
 }
 
 /// One painted run of a text: its byte length, its ink (`None` for the
@@ -559,7 +623,7 @@ impl GalleyShaper {
         // for the cache and the counters, and a `TextStyle` is a size, a
         // family handle and an optional float.
         let style = self.typography.resolve(req.style).0.clone();
-        let weights = req.runs.weights();
+        let faces = req.runs.faces();
         let (max_rows, break_anywhere, overflow) = wrapping(req);
         let wrap_width = req.available_width.unwrap_or(f32::INFINITY);
         let key = GalleyKey {
@@ -593,7 +657,7 @@ impl GalleyShaper {
                     )
                 })
                 .collect(),
-            weights: weights.clone(),
+            faces: faces.clone(),
         };
         if let Some(hit) = self.galleys.get(&key) {
             self.reused += 1;
@@ -604,11 +668,11 @@ impl GalleyShaper {
         // which takes a `FontId` and has nowhere to put a line height.
         // `single_section` leaves `wrap` at its default, so the wrap width
         // `simple` would have set is set here.
-        let format = |weight: Option<TypographyWeight>,
+        let format = |face: RunFace,
                       color: Color32,
                       underline: bool,
                       background: Option<Color32>| TextFormat {
-            font_id: style.font_at(weight),
+            font_id: style.font_at(face),
             color,
             background: background.unwrap_or(Color32::TRANSPARENT),
             line_height: style.line_height,
@@ -622,10 +686,10 @@ impl GalleyShaper {
             },
             ..TextFormat::default()
         };
-        let mut job = if runs.is_empty() && weights.is_empty() {
+        let mut job = if runs.is_empty() && faces.is_empty() {
             LayoutJob::single_section(
                 req.text.to_owned(),
-                format(None, Color32::PLACEHOLDER, false, None),
+                format(RunFace::default(), Color32::PLACEHOLDER, false, None),
             )
         } else {
             let mut job = LayoutJob {
@@ -633,12 +697,12 @@ impl GalleyShaper {
                 ..LayoutJob::default()
             };
             // One section per stretch over which both the ink run and the
-            // weight run hold still: the two lists tile the same string at
+            // face run hold still: the two lists tile the same string at
             // their own boundaries, and a section is where neither changes.
             // Clamped, not trusted: acceptance guarantees the tiling for an
             // accepted tree, and a shaper handed a bad one draws a short line
             // rather than panicking inside a paint pass.
-            for (range, weight, ink) in sections(req.text.len(), &weights, runs) {
+            for (range, face, ink) in sections(req.text.len(), &faces, runs) {
                 let (color, underline, background) =
                     ink.map_or((Color32::PLACEHOLDER, false, None), |run| {
                         (
@@ -651,7 +715,7 @@ impl GalleyShaper {
                     leading_space: 0.0,
                     byte_range: egui::text::ByteIndex(range.start)
                         ..egui::text::ByteIndex(range.end),
-                    format: format(weight, color, underline, background),
+                    format: format(face, color, underline, background),
                 });
             }
             job
@@ -666,25 +730,21 @@ impl GalleyShaper {
     }
 }
 
-/// The stretches of a `len`-byte string over which neither the weight runs
+/// The stretches of a `len`-byte string over which neither the face runs
 /// nor the ink runs change, in order, tiling `0..len`.
 ///
 /// Each list tiles the string at its own boundaries (either may be empty,
 /// meaning one stretch); a boundary past `len` is clamped and a list that
-/// stops short leaves the tail at no weight and no ink, the placeholder the
+/// stops short leaves the tail in the plain face and no ink, the placeholder the
 /// painter fills with the node's own `foreground`.
 fn sections<'r>(
     len: usize,
-    weights: &[(usize, Option<TypographyWeight>)],
+    faces: &[(usize, RunFace)],
     inks: &'r [InkRun],
-) -> Vec<(
-    std::ops::Range<usize>,
-    Option<TypographyWeight>,
-    Option<&'r InkRun>,
-)> {
-    let mut cuts: Vec<usize> = Vec::with_capacity(weights.len() + inks.len() + 1);
+) -> Vec<(std::ops::Range<usize>, RunFace, Option<&'r InkRun>)> {
+    let mut cuts: Vec<usize> = Vec::with_capacity(faces.len() + inks.len() + 1);
     let mut at = 0usize;
-    for (n, _) in weights {
+    for (n, _) in faces {
         at = at.saturating_add(*n).min(len);
         cuts.push(at);
     }
@@ -708,9 +768,9 @@ fn sections<'r>(
     let mut start = 0usize;
     for cut in cuts {
         if cut > start {
-            let weight = covering(weights, |w| w.0, start).and_then(|w| w.1);
+            let face = covering(faces, |f| f.0, start).map_or_else(RunFace::default, |f| f.1);
             let ink = covering(inks, |r| r.len, start);
-            out.push((start..cut, weight, ink));
+            out.push((start..cut, face, ink));
             start = cut;
         }
     }
@@ -1938,6 +1998,7 @@ mod tests {
                 underline: false,
                 background: None,
                 weight: r.weight,
+                italic: r.italic,
             })
             .collect();
         let at = |runs| TextRequest {
@@ -1963,6 +2024,94 @@ mod tests {
         assert!(
             measured > regular + 0.5,
             "the strong stretch must be set in its own face: {measured} vs regular {regular}"
+        );
+    }
+
+    /// An italic run: measured and painted are one width, and the painted
+    /// stretch draws through the italic family, at the style's own weight
+    /// when the run names none and at Medium Italic when it is also strong.
+    ///
+    /// Falsify by dropping `italic` from `RunFace` in `TextRuns::faces`: the
+    /// stretch draws upright and the family assertions fail.
+    #[test]
+    fn an_italic_run_measures_what_it_paints_in_the_italic_face() {
+        use gorgon_petra::frame::placement::TextRunPaint;
+        use gorgon_petra::layout::TextRuns;
+        use gorgon_petra::tree::TextRun;
+        let h = Headless::new();
+        crate::fonts::install_design_system(&h.0);
+        pass(&h.0);
+        let mut s = h.shaper_with(Typography::from_theme(
+            &dark(),
+            &crate::fonts::design_system_faces(),
+        ));
+        let text = "plain emphasis both plain";
+        let tree = [
+            TextRun {
+                len: 6,
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 9,
+                italic: true,
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 5,
+                italic: true,
+                weight: Some(TypographyWeight::Medium),
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 5,
+                ..TextRun::default()
+            },
+        ];
+        let frame: Vec<TextRunPaint> = tree
+            .iter()
+            .map(|r| TextRunPaint {
+                len: r.len,
+                foreground: None,
+                underline: false,
+                background: None,
+                weight: r.weight,
+                italic: r.italic,
+            })
+            .collect();
+        let at = |runs| TextRequest {
+            style: Some("typography.body"),
+            runs,
+            ..req(text, None, TextWrap::Wrap)
+        };
+        let upright = s.text(&at(TextRuns::Plain)).size.w;
+        let measured = s.text(&at(TextRuns::Tree(&tree))).size.w;
+        let galley = s.galley_runs(&at(TextRuns::Frame(&frame)), &[]);
+        let painted = galley.rect.width();
+        assert!(
+            (measured - painted).abs() < 1e-3,
+            "measured {measured} and painted {painted} must be one width"
+        );
+        assert!(
+            (measured - upright).abs() > 0.5,
+            "the italic stretches must have the italic face's advances: {measured} vs {upright}"
+        );
+        let families: Vec<String> = galley
+            .job
+            .sections
+            .iter()
+            .map(|section| format!("{:?}", section.format.font_id.family))
+            .collect();
+        assert!(
+            families[1].contains(crate::fonts::SANS_ITALIC_FAMILY),
+            "{families:?}"
+        );
+        assert!(
+            families[2].contains(crate::fonts::SANS_MEDIUM_ITALIC_FAMILY),
+            "{families:?}"
+        );
+        assert!(
+            families[3].contains(crate::fonts::SANS_REGULAR_FAMILY),
+            "{families:?}"
         );
     }
 

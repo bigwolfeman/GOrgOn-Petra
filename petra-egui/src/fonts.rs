@@ -8,8 +8,9 @@
 //!
 //! ## The design system: embedded, unconditional, identical everywhere
 //!
-//! [`DESIGN_SYSTEM_FACES`] is IBM Plex Sans in three weights plus IBM Plex
-//! Mono, `include_bytes!`'d out of `petra-egui/assets/fonts`.
+//! [`DESIGN_SYSTEM_FACES`] is IBM Plex Sans in three weights, its Italic
+//! and Medium Italic, and IBM Plex Mono, `include_bytes!`'d out of
+//! `petra-egui/assets/fonts`.
 //! [`install_design_system`] puts them at the head of every family, and
 //! [`crate::host::Host::new`] calls it, so a product built on this crate
 //! draws in the shipped face without doing anything.
@@ -21,14 +22,14 @@
 //! equality an accident. It is also the only design that works on wasm at
 //! all, where there is no filesystem to read a face from.
 //!
-//! 759 KiB, and `include_bytes!` in a `const` costs nothing at run time:
+//! 1,167 KiB, and `include_bytes!` in a `const` costs nothing at run time:
 //! there is no I/O, so the objection that kept fonts out of
 //! [`crate::host::Host::new`] — that it should not read files behind an
 //! application's back — does not apply to these.
 //!
 //! Why Plex and not Inter or Geist: `epaint` 0.36.1 exposes no OpenType
 //! feature-tag API, so `tnum` cannot be requested and the shipped face must
-//! carry tabular figures *by default*. All four embedded faces give every
+//! carry tabular figures *by default*. All six embedded faces give every
 //! digit an advance of 600/1000 units and carry no `tnum`/`pnum` feature at
 //! all. `assets/fonts/PROVENANCE.md` records the measurement and the
 //! licence; `every_embedded_face_has_tabular_figures_by_default` re-measures
@@ -147,11 +148,19 @@ pub const SANS_REGULAR_FAMILY: &str = "gorgon-sans";
 pub const SANS_MEDIUM_FAMILY: &str = "gorgon-sans-medium";
 /// See [`SANS_REGULAR_FAMILY`].
 pub const SANS_BOLD_FAMILY: &str = "gorgon-sans-bold";
+/// The family an italic run at the regular weight draws through. Italic is
+/// a face too, under its own family name, for the same reason a weight is.
+pub const SANS_ITALIC_FAMILY: &str = "gorgon-sans-italic";
+/// See [`SANS_ITALIC_FAMILY`]. Also draws a bold italic run: the design
+/// system embeds no Bold Italic, and slant is the cue an emphasis must keep.
+pub const SANS_MEDIUM_ITALIC_FAMILY: &str = "gorgon-sans-medium-italic";
 
-/// Registered face names for the four embedded faces.
+/// Registered face names for the six embedded faces.
 const SANS_REGULAR: &str = "gorgon-plex-sans-regular";
 const SANS_MEDIUM: &str = "gorgon-plex-sans-medium";
 const SANS_BOLD: &str = "gorgon-plex-sans-bold";
+const SANS_ITALIC: &str = "gorgon-plex-sans-italic";
+const SANS_MEDIUM_ITALIC: &str = "gorgon-plex-sans-medium-italic";
 const MONO_REGULAR: &str = "gorgon-plex-mono-regular";
 
 /// The faces this crate embeds, in no particular order — the chains built by
@@ -176,6 +185,14 @@ pub const DESIGN_SYSTEM_FACES: &[EmbeddedFace] = &[
     EmbeddedFace {
         name: SANS_BOLD,
         bytes: include_bytes!("../assets/fonts/IBMPlexSans-Bold.ttf"),
+    },
+    EmbeddedFace {
+        name: SANS_ITALIC,
+        bytes: include_bytes!("../assets/fonts/IBMPlexSans-Italic.ttf"),
+    },
+    EmbeddedFace {
+        name: SANS_MEDIUM_ITALIC,
+        bytes: include_bytes!("../assets/fonts/IBMPlexSans-MediumItalic.ttf"),
     },
     EmbeddedFace {
         name: MONO_REGULAR,
@@ -248,6 +265,8 @@ fn register_design_system(definitions: &mut FontDefinitions) {
         (SANS_REGULAR_FAMILY, SANS_REGULAR),
         (SANS_MEDIUM_FAMILY, SANS_MEDIUM),
         (SANS_BOLD_FAMILY, SANS_BOLD),
+        (SANS_ITALIC_FAMILY, SANS_ITALIC),
+        (SANS_MEDIUM_ITALIC_FAMILY, SANS_MEDIUM_ITALIC),
     ] {
         let mut chain = vec![face.to_owned()];
         chain.extend(proportional.iter().filter(|n| *n != face).cloned());
@@ -271,6 +290,11 @@ pub fn design_system_faces() -> crate::text::FontFaces {
         FontFamily::Name(SANS_REGULAR_FAMILY.into()),
         FontFamily::Name(SANS_MEDIUM_FAMILY.into()),
         FontFamily::Name(SANS_BOLD_FAMILY.into()),
+    )
+    .with_italic(
+        FontFamily::Name(SANS_ITALIC_FAMILY.into()),
+        FontFamily::Name(SANS_MEDIUM_ITALIC_FAMILY.into()),
+        FontFamily::Name(SANS_MEDIUM_ITALIC_FAMILY.into()),
     )
 }
 
@@ -1105,7 +1129,7 @@ mod tests {
         }
     }
 
-    /// All four embedded faces reach `FontDefinitions`, and every family
+    /// All six embedded faces reach `FontDefinitions`, and every family
     /// chain that should lead with one does.
     ///
     /// The failure this guards is a face that is `include_bytes!`'d, counted
@@ -1132,6 +1156,11 @@ mod tests {
             (FontFamily::Name(SANS_REGULAR_FAMILY.into()), SANS_REGULAR),
             (FontFamily::Name(SANS_MEDIUM_FAMILY.into()), SANS_MEDIUM),
             (FontFamily::Name(SANS_BOLD_FAMILY.into()), SANS_BOLD),
+            (FontFamily::Name(SANS_ITALIC_FAMILY.into()), SANS_ITALIC),
+            (
+                FontFamily::Name(SANS_MEDIUM_ITALIC_FAMILY.into()),
+                SANS_MEDIUM_ITALIC,
+            ),
         ];
         for (family, expected) in leads {
             let chain = definitions
@@ -1164,6 +1193,14 @@ mod tests {
         assert!(
             design_system_faces().distinguishes_weight(),
             "three weight classes must map to three different families"
+        );
+        assert!(
+            design_system_faces().distinguishes_slant(),
+            "an italic run must draw through a different family from an upright one"
+        );
+        assert!(
+            !crate::text::FontFaces::default().distinguishes_slant(),
+            "the default stack has no italic face and must say so"
         );
         assert!(
             !crate::text::FontFaces::default().distinguishes_weight(),

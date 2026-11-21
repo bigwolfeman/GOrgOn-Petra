@@ -266,12 +266,13 @@ fn rows_declare_their_place_and_the_tree_declares_its_total() {
 
 /// Keyboard focus crosses the edge of the window.
 ///
-/// Focus the last row that is on screen. The next row in document order
-/// is placed but clipped (overscan): `FocusTree::order` does not hold it, so
-/// Tab alone would skip it, and `FocusTree::reachable` does name it. A host
-/// answers by scrolling it into view, and then focus can land on it.
-/// Repeating that 40 rows down the list moves the window each time and never
-/// builds more than the same bounded frame.
+/// The tree is one Tab stop (`Role::roves`), so the walk down its rows is
+/// the application's arrow keys: each step names the next row. Focus the
+/// last row that is on screen. The next row is placed but clipped
+/// (overscan): `FocusTree::order` does not hold it, so it cannot take focus
+/// until a scroll reveals it, and then it can. Repeating that 40 rows down
+/// the list moves the window each time and never builds more than the same
+/// bounded frame.
 #[test]
 fn keyboard_focus_moves_across_the_edge_of_the_window() {
     let mut h = harness();
@@ -288,12 +289,20 @@ fn keyboard_focus_moves_across_the_edge_of_the_window() {
         .focus(&start)
         .expect("the last visible row takes focus");
 
+    assert_eq!(
+        focus.reachable(&frame.placements, &scopes, 1).as_deref(),
+        Some(start.as_str()),
+        "the tree is one Tab stop: Tab from its only stop comes back to it"
+    );
+
     for step in 0..40 {
         let current = focus.current().expect("focus is somewhere").to_owned();
-        let next = focus
-            .reachable(&frame.placements, &scopes, 1)
-            .expect("there is a next row in document order");
-        assert_ne!(next, current, "step {step}: focus did not advance");
+        let index: usize = current.rsplit("/r").next().unwrap().parse().unwrap();
+        let next = format!("/files/rows/r{}", index + 1);
+        assert!(
+            frame.placement(&next).is_some(),
+            "step {step}: the next row is placed (on screen or in overscan)"
+        );
 
         if !focus.order().contains(&next) {
             // The next row is past the visible edge. Scroll one row, as a

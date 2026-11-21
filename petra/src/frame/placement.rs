@@ -366,6 +366,8 @@ pub struct TextRunPaint {
     /// [`crate::tree::TextRun::weight`]. A shaping input, so the painter
     /// hands it back to the shaper in [`crate::layout::TextRequest::runs`].
     pub weight: Option<crate::token::TypographyWeight>,
+    /// [`crate::tree::TextRun::italic`]. A shaping input, like `weight`.
+    pub italic: bool,
 }
 
 /// The pointer a surface draws back at the node it is anchored to.

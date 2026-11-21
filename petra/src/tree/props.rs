@@ -105,6 +105,15 @@ pub struct TextRun {
     /// monospace style it changes nothing: the mono family has one face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<crate::token::TypographyWeight>,
+    /// Set this stretch in the italic face of its weight. Markdown's
+    /// emphasis is italic, so it is a shape of its own and does not share
+    /// the underline a link draws.
+    ///
+    /// A measurement input like [`TextRun::weight`]: an italic face has its
+    /// own advances. Inside a monospace style it changes nothing.
+    /// Defaulted and skipped when false, so older trees parse unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
     /// Makes this stretch a link of its own, inside the paragraph it reads in.
     ///
     /// Layout gives the stretch a placement under the text's, keyed
@@ -1009,6 +1018,17 @@ pub struct Props {
     /// still virtualizes along `axis` only. Absent is one axis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_scroll: Option<bool>,
+    /// Whether a `scroll`'s content is at least its viewport long: CSS's
+    /// `min-height: 100%` on a scroller's child. The content is placed at
+    /// the longer of the viewport and the content's own minimum (its `Zero`
+    /// response), so a column whose flexible child is itself a scroll fills
+    /// a tall viewport, and in a short one is its minimum long and scrolls.
+    ///
+    /// Without it the content is placed at its natural length, which hands a
+    /// nested scroll its whole content as a viewport. A slot that wraps
+    /// whatever it seats in a scroll declares this. Absent is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill_viewport: Option<bool>,
     /// Keep this node at the leading edge of its enclosing two-axis
     /// `scroll`'s viewport on the cross axis while the content scrolls
     /// under it: CSS `position: sticky` on one edge. A code view's gutter
@@ -1276,6 +1296,9 @@ pub struct ScrollProps {
     /// Whether the scroll also scrolls across `axis`
     /// ([`Props::cross_scroll`]).
     pub cross_scroll: bool,
+    /// Whether the content is at least the viewport long
+    /// ([`Props::fill_viewport`]).
+    pub fill_viewport: bool,
 }
 
 /// Whether a `scroll` draws an indicator: SwiftUI's `scrollIndicators`.
@@ -1441,6 +1464,7 @@ impl Props {
             axis: self.axis.unwrap_or(Axis::Vertical),
             indicators: self.indicators.unwrap_or_default(),
             cross_scroll: self.cross_scroll.unwrap_or(false),
+            fill_viewport: self.fill_viewport.unwrap_or(false),
         }
     }
 

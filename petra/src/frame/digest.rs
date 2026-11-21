@@ -405,6 +405,14 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
                     w.opt_text(run.weight.map(crate::token::TypographyWeight::as_str));
                 }
             }
+            // The slant last, on the same terms: a list with no italic run
+            // keeps the digest it had before the field existed.
+            if runs.iter().any(|run| run.italic) {
+                w.text("italic");
+                for run in runs {
+                    w.bool(run.italic);
+                }
+            }
         }
         None => w.bool(false),
     }
@@ -1519,6 +1527,7 @@ mod tests {
             len,
             foreground: fg.map(ToOwned::to_owned),
             weight: None,
+            italic: false,
         };
 
         let plain = with(Vec::new());
@@ -1570,6 +1579,7 @@ mod tests {
             underline: false,
             background: None,
             weight: None,
+            italic: false,
         };
         let plain = with(vec![run(3), run(3)]);
         let strong = with(vec![
@@ -1596,6 +1606,35 @@ mod tests {
         assert_ne!(plain, strong, "a strong stretch is a different picture");
         assert_ne!(strong, bold, "two weights are two pictures");
         assert_ne!(plain, banded, "a band is a different picture");
+    }
+
+    /// An italic run moves the paint hash. A list where no run is italic
+    /// writes no `italic` block, so it hashes as it did before the field
+    /// joined the stream: the pinned digests elsewhere in this suite hold
+    /// that. Falsify by dropping the `italic` block from
+    /// `hash_paint_content`: the first pair hashes alike.
+    #[test]
+    fn an_italic_run_moves_the_paint_hash_and_nothing_else_does() {
+        let with = |runs: Vec<TextRunPaint>| {
+            let mut content = rich_content();
+            if let Some(text) = content.text.as_mut() {
+                text.runs = runs;
+            }
+            hash_paint_content(&content)
+        };
+        let run = |len: usize, italic: bool| TextRunPaint {
+            len,
+            foreground: None,
+            underline: false,
+            background: None,
+            weight: None,
+            italic,
+        };
+        let upright = with(vec![run(3, false), run(3, false)]);
+        let italic = with(vec![run(3, true), run(3, false)]);
+        let other = with(vec![run(3, false), run(3, true)]);
+        assert_ne!(upright, italic, "an italic stretch is a different picture");
+        assert_ne!(italic, other, "which stretch is italic matters");
     }
 
     /// A canvas whose numbers are all distinct and none of them round, so a

@@ -709,6 +709,24 @@ fn spend_declared(
         weight_total: 0.0,
         overflowed: false,
     };
+    // What the weight tracks cannot do without: their content's `Zero`
+    // answer, a declared minimum included. A fit-content track is clamped
+    // to the budget less this, so a long fit-content track (a list in a
+    // scroll) leaves a weighted sibling its minimum instead of taking the
+    // whole axis — the same reservation a stack makes for lower-priority
+    // children. Asked only when both kinds share the axis.
+    let competing = tracks.iter().any(|t| matches!(t, TrackSize::FitContent))
+        && tracks.iter().any(|t| matches!(t, TrackSize::Weight { .. }));
+    let weight_floor: f32 = if competing {
+        tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| matches!(t, TrackSize::Weight { .. }))
+            .map(|(i, _)| natural(i, Proposal::Zero).max(0.0))
+            .sum()
+    } else {
+        0.0
+    };
     for (i, track) in tracks.iter().enumerate() {
         match track {
             TrackSize::Fixed { value } => {
@@ -721,7 +739,7 @@ fn spend_declared(
             }
             TrackSize::FitContent => {
                 let ideal = natural(i, Proposal::Unspecified).max(0.0);
-                let w = ideal.min(out.budget);
+                let w = ideal.min((out.budget - weight_floor).max(0.0));
                 out.widths[i] = w;
                 out.budget = (out.budget - w).max(0.0);
             }

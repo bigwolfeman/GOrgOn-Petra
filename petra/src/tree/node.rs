@@ -450,6 +450,16 @@ impl Role {
         }
     }
 
+    /// Whether a placement with this role is one stop in Tab order however
+    /// many focusable rows it holds (roving tabindex): Tab lands on its
+    /// focused, selected or first row, and the application's arrow keys
+    /// move within it. `Tree` alone today, as Carbon's tree view; a list
+    /// box or a tab list would join here.
+    #[must_use]
+    pub fn roves(&self) -> bool {
+        matches!(self, Self::Tree)
+    }
+
     /// The static wire name of a built-in role, or `None` for [`Role::Custom`].
     #[must_use]
     pub fn builtin_name(&self) -> Option<&'static str> {

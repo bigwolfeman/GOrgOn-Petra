@@ -2552,6 +2552,7 @@ mod tests {
                         len: *len,
                         foreground: None,
                         weight: None,
+                        italic: false,
                         link: None,
                     })
                     .collect(),

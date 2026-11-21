@@ -51,9 +51,10 @@ pub struct TextRequest<'a> {
     pub max_lines: Option<usize>,
     /// Width the run may use, or `None` for an open probe.
     pub available_width: Option<f32>,
-    /// The runs over [`TextRequest::text`], for the one thing in them that
-    /// is a shaping input: [`TextRun::weight`]. Ink, underline and band are
-    /// read by the painter from the frame and never change an extent.
+    /// The runs over [`TextRequest::text`], for the two things in them that
+    /// are shaping inputs: [`TextRun::weight`] and [`TextRun::italic`]. Ink,
+    /// underline and band are read by the painter from the frame and never
+    /// change an extent.
     pub runs: TextRuns<'a>,
 }
 
@@ -62,7 +63,7 @@ pub struct TextRequest<'a> {
 /// ask for a measurement.
 ///
 /// Layout measures from the tree's runs and the painter shapes from the
-/// frame's; both name the same lengths and weights
+/// frame's; both name the same lengths and faces
 /// (`layout::paint_content_of` copies one into the other), which is what
 /// keeps a measured run and its painted run the same width.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -76,22 +77,44 @@ pub enum TextRuns<'a> {
     Frame(&'a [TextRunPaint]),
 }
 
-impl TextRuns<'_> {
-    /// `(byte length, weight)` per run, tiling the text the way the runs do,
-    /// or empty when no run names a weight. Empty shapes exactly what
-    /// [`TextRuns::Plain`] shapes, so a shaper keys and lays out a
-    /// colour-only list as the plain string it is.
+/// The face a run is set in: the shaping half of a run. `Default` is the
+/// node's own face.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RunFace {
+    /// [`TextRun::weight`]: `None` keeps the style's own weight.
+    pub weight: Option<crate::token::TypographyWeight>,
+    /// [`TextRun::italic`].
+    pub italic: bool,
+}
+
+impl RunFace {
+    /// The node's own face: no weight named, upright.
     #[must_use]
-    pub fn weights(&self) -> Vec<(usize, Option<crate::token::TypographyWeight>)> {
+    pub fn is_plain(self) -> bool {
+        self == Self::default()
+    }
+}
+
+impl TextRuns<'_> {
+    /// `(byte length, face)` per run, tiling the text the way the runs do,
+    /// or empty when every run is in the node's own face. Empty shapes
+    /// exactly what [`TextRuns::Plain`] shapes, so a shaper keys and lays
+    /// out a colour-only list as the plain string it is.
+    #[must_use]
+    pub fn faces(&self) -> Vec<(usize, RunFace)> {
+        // Checked before anything is built: this runs on every measurement,
+        // and almost every run list is colour only.
+        let face = |weight, italic| RunFace { weight, italic };
         match self {
-            Self::Plain => Vec::new(),
-            Self::Tree(runs) if runs.iter().any(|r| r.weight.is_some()) => {
-                runs.iter().map(|r| (r.len, r.weight)).collect()
-            }
-            Self::Frame(runs) if runs.iter().any(|r| r.weight.is_some()) => {
-                runs.iter().map(|r| (r.len, r.weight)).collect()
-            }
-            Self::Tree(_) | Self::Frame(_) => Vec::new(),
+            Self::Tree(runs) if runs.iter().any(|r| r.weight.is_some() || r.italic) => runs
+                .iter()
+                .map(|r| (r.len, face(r.weight, r.italic)))
+                .collect(),
+            Self::Frame(runs) if runs.iter().any(|r| r.weight.is_some() || r.italic) => runs
+                .iter()
+                .map(|r| (r.len, face(r.weight, r.italic)))
+                .collect(),
+            Self::Plain | Self::Tree(_) | Self::Frame(_) => Vec::new(),
         }
     }
 }
@@ -1113,6 +1136,7 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
                         underline: run.underline,
                         background: run.background.as_ref().map(|n| n.as_str().to_owned()),
                         weight: run.weight,
+                        italic: run.italic,
                     })
                     .collect()
             } else {
@@ -1617,6 +1641,7 @@ mod tests {
                 overscan,
                 indicators: crate::tree::ScrollIndicators::Automatic,
                 cross_scroll: false,
+                fill_viewport: false,
             },
             viewport: super::SizeProposal::unspecified(),
         };

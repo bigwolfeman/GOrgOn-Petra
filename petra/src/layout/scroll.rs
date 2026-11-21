@@ -215,7 +215,23 @@ pub fn place(
         });
 
         let viewport_extent = viewport_size.along(axis);
-        let content_extent = content_size.along(axis);
+        // A filling scroll places its content at the longer of the viewport
+        // and the content's minimum, not at its natural length: a flexible
+        // child then takes the viewport's leftover, and a nested scroll is
+        // never handed its whole content as a viewport (`Props::fill_viewport`).
+        let content_extent = if scroll.fill_viewport {
+            let least = ctx.within_scroll(frame.clone(), |ctx| {
+                crate::layout::measure(
+                    child,
+                    ctx,
+                    path,
+                    child_proposal.with_axis(axis, Proposal::Zero),
+                )
+            });
+            least.along(axis).max(viewport_extent)
+        } else {
+            content_size.along(axis)
+        };
         let max_offset = (content_extent - viewport_extent).max(0.0);
 
         // `scroll_offset` already floors a missing/negative/non-finite entry
