@@ -24,6 +24,7 @@ pub(super) fn paint_custom(
             scale: env.scale,
             tokens: env.colors,
             time: env.time,
+            key: content.custom_key.as_deref(),
         };
         // `is_some_and` rather than an `if let` that ignores the bool: a
         // registered painter that draws nothing must be treated exactly

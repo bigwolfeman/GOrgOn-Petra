@@ -55,7 +55,8 @@ pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal)
         NodeKind::Separator => measure_separator(node, ctx, proposal),
         NodeKind::Custom => {
             let name = node.props.custom_kind.as_deref().unwrap_or("");
-            ctx.content.custom(name, proposal)
+            ctx.content
+                .custom(name, node.props.custom_key.as_deref(), proposal)
         }
         // A draw list has no intrinsic size, which is the whole reason
         // `canvas` is a second kind beside `custom` rather than a mode of it

@@ -270,6 +270,26 @@ pub enum GestureOutcome {
     Cancelled(CancelReason),
 }
 
+impl InputEvent {
+    /// The event as the application hears it under `route`.
+    ///
+    /// A [`InputEvent::Paste`] stays a paste only on [`Route::Raw`], where
+    /// the claimant asked to tell the two apart. On every other route it
+    /// becomes [`InputEvent::Text`] with the same string, so a node that
+    /// handles typed text handles a paste with no second case. Every other
+    /// event comes back unchanged. Hosts call this once, between routing and
+    /// `App::handle`.
+    #[must_use]
+    pub fn delivered(&self, route: &Route) -> std::borrow::Cow<'_, InputEvent> {
+        match (self, route) {
+            (InputEvent::Paste(text), route) if !matches!(route, Route::Raw { .. }) => {
+                std::borrow::Cow::Owned(InputEvent::Text(text.clone()))
+            }
+            _ => std::borrow::Cow::Borrowed(self),
+        }
+    }
+}
+
 impl GestureOutcome {
     /// Whether the gesture finished the way its component intended.
     #[must_use]
@@ -329,8 +349,22 @@ pub enum InputEvent {
         /// Modifiers held.
         modifiers: Modifiers,
     },
-    /// Committed text, from a keystroke, a paste, or an IME composition.
+    /// Committed text, from a keystroke or an IME composition. A paste is
+    /// [`InputEvent::Paste`] from the host, and every node but a raw
+    /// claimant hears it as this variant ([`InputEvent::delivered`]).
     Text(String),
+    /// Text from the clipboard, apart from [`InputEvent::Text`] so a node can
+    /// tell a paste from typing. A program on the far side of a raw claim
+    /// needs the difference: it may wrap a paste in markers so pasted
+    /// newlines are not taken as commands, and typed text is never wrapped.
+    ///
+    /// Routes exactly like `Text` (it asks for [`Interaction::TextEdit`],
+    /// and a raw claim takes it verbatim). Only the raw claimant hears it as
+    /// `Paste`: a host passes every event through [`InputEvent::delivered`]
+    /// before the application sees it, which turns it into `Text` on every
+    /// other route, so a text field handles one variant and pasting into it
+    /// works as before.
+    Paste(String),
     /// The window gained keyboard focus.
     WindowFocused,
     /// The window lost keyboard focus.
@@ -410,6 +444,14 @@ pub enum InputEvent {
     /// is host-derived state that spans whatever runs it spans
     /// ([`TextSelection`]), so there is no one node to route it to.
     Copy,
+    /// The operator asked for the selection to be cut, the platform's cut
+    /// command (Ctrl+X, Cmd+X, a `Cut` key, an Edit menu item).
+    ///
+    /// Window-level like [`InputEvent::Copy`] and for the same reason:
+    /// `egui-winit` pushes it **instead of** the keystroke, so without this
+    /// variant Ctrl+X never reached the application at all. A program behind
+    /// a raw claim that takes Ctrl+X as a keystroke learns of it only here.
+    Cut,
 }
 
 impl InputEvent {
@@ -542,7 +584,7 @@ pub fn required_interaction_during(
         }
         InputEvent::Scroll { .. } => Some(Interaction::Scroll),
         InputEvent::Key { .. } => Some(Interaction::Key),
-        InputEvent::Text(_) => Some(Interaction::TextEdit),
+        InputEvent::Text(_) | InputEvent::Paste(_) => Some(Interaction::TextEdit),
         // A gesture end is the last event of a drag and reports on one; the
         // node it names declared `Drag` to have been given the capture, so
         // that is the interaction it is heard under.
@@ -553,7 +595,8 @@ pub fn required_interaction_during(
         InputEvent::WindowFocused
         | InputEvent::WindowBlurred
         | InputEvent::Modifiers(_)
-        | InputEvent::Copy => None,
+        | InputEvent::Copy
+        | InputEvent::Cut => None,
     }
 }
 
@@ -761,8 +804,10 @@ fn reserved_or_raw(
             });
         }
     }
-    if matches!(event, InputEvent::Key { .. } | InputEvent::Text(_))
-        && let Some(claimant) = raw_claimant(frame, focused)
+    if matches!(
+        event,
+        InputEvent::Key { .. } | InputEvent::Text(_) | InputEvent::Paste(_)
+    ) && let Some(claimant) = raw_claimant(frame, focused)
     {
         // The claiming node, not necessarily `id` itself: focus may sit on a
         // descendant of the node that actually declared the raw claim (the
@@ -3928,6 +3973,37 @@ mod tests {
             "focus inside the claiming node's subtree must route raw, \
              naming the claimant: {got:?}"
         );
+    }
+
+    /// A paste reaches a raw claimant as a paste, and every other node as
+    /// typed text. Kill lines: the `Paste` arm in `reserved_or_raw`, and the
+    /// `Raw` guard in `InputEvent::delivered`.
+    #[test]
+    fn a_paste_is_a_paste_only_to_a_raw_claimant() {
+        let paste = InputEvent::Paste("one\ntwo".into());
+        assert_eq!(required_interaction(&paste), Some(Interaction::TextEdit));
+        let term = raw_claim_node("/term", Rect::new(0.0, 0.0, 200.0, 200.0), None);
+        let f = frame(vec![term]);
+        let routed = route_with_reserved(&f, Some("/term"), &paste, &ReservedChords::default());
+        assert_eq!(
+            routed,
+            Route::Raw {
+                node: "/term".into()
+            }
+        );
+        assert_eq!(paste.delivered(&routed).as_ref(), &paste);
+        let field = Route::Keyboard {
+            node: "/field".into(),
+        };
+        assert_eq!(
+            paste.delivered(&field).as_ref(),
+            &InputEvent::Text("one\ntwo".into())
+        );
+        let typed = InputEvent::Text("x".into());
+        assert!(matches!(
+            typed.delivered(&routed),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     /// The direct case: focus sits on the claiming node itself, exactly

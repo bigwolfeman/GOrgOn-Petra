@@ -395,6 +395,9 @@ pub struct PaintContent {
     pub image: Option<String>,
     /// Registered painter name, if this node is a custom kind.
     pub custom: Option<String>,
+    /// The custom node's `Props::custom_key`: the instance and version the
+    /// painter draws. `None` for every other kind. A digest input.
+    pub custom_key: Option<String>,
     /// Token references by role name, resolved against the frame's theme
     /// snapshot at paint time.
     ///
@@ -509,6 +512,7 @@ impl PaintContent {
         self.text.is_none()
             && self.image.is_none()
             && self.custom.is_none()
+            && self.custom_key.is_none()
             && self.tokens.is_empty()
             // A caret is a shape on the screen, so a payload carrying one is
             // not empty — and this line is what keeps it out of
@@ -1322,6 +1326,7 @@ mod tests {
                     text: Some(text),
                     image: Some("logo.png".into()),
                     custom: Some("gauge".into()),
+                    custom_key: None,
                     tokens,
                     caret: None,
                     canvas: None,

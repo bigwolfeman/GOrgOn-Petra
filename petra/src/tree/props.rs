@@ -1129,6 +1129,18 @@ pub struct Props {
     /// Registered painter name for `custom`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_kind: Option<String>,
+    /// Which instance of `custom_kind` this node draws, and at what version.
+    ///
+    /// One painter serves every node of its kind, and before this field it
+    /// was handed no node data, so two nodes of one kind painted alike and a
+    /// changed picture behind an unchanged tree left the digest where it
+    /// was. The host hands this string to the painter
+    /// (`CustomPaintCtx::key`) and to the measurer, and it enters the frame
+    /// digest, so an author who puts a revision in it gets a new digest when
+    /// the picture changes. Free-form; Petra never parses it. Inert on every
+    /// kind but `custom`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_key: Option<String>,
     /// Explicit z-order within the node's layer. Ties break on child order.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub z: Option<i32>,

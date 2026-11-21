@@ -683,6 +683,10 @@ pub struct CustomPaintCtx<'a> {
     /// `ambient`, or the idle scheduler stops asking for frames and the
     /// picture freezes (FR-062).
     pub time: f64,
+    /// The node's `Props::custom_key`: which instance this placement draws.
+    /// One painter serves every node of its kind and reads its data by this
+    /// key. `None` when the node set none.
+    pub key: Option<&'a str>,
 }
 
 /// A host-registered painter for one `PaintContent.custom` name.

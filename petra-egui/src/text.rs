@@ -851,7 +851,7 @@ impl ContentMeasure for GalleyShaper {
         Size::ZERO
     }
 
-    fn custom(&mut self, name: &str, _proposal: SizeProposal) -> Size {
+    fn custom(&mut self, name: &str, _key: Option<&str>, _proposal: SizeProposal) -> Size {
         // Same reasoning as `image`: a custom kind with no registered measurer
         // takes no space, and says so.
         self.unsupported_customs.insert(name.to_owned());
@@ -869,7 +869,20 @@ impl ContentMeasure for GalleyShaper {
 /// [`crate::paint::CustomPainterFn`]: that closure is handed the placement
 /// this crate already resolved and paints *into* it; this one is handed the
 /// offer and answers *with* the extent the painter will get.
-pub type CustomMeasurerFn = dyn Fn(SizeProposal) -> Size;
+pub type CustomMeasurerFn = dyn Fn(&CustomMeasureCtx<'_>) -> Size;
+
+/// What a registered custom measurer is asked: the offer, and which node.
+///
+/// The measurement mirror of [`crate::paint::CustomPaintCtx`]. A struct, not
+/// two arguments, so the next fact a measurer needs is a field and not a
+/// change to every registered closure.
+#[derive(Clone, Copy, Debug)]
+pub struct CustomMeasureCtx<'a> {
+    /// The offer, honoured the way any leaf honours one.
+    pub proposal: SizeProposal,
+    /// The node's `Props::custom_key`, or `None` when it set none.
+    pub key: Option<&'a str>,
+}
 
 /// Host-registered measurers, keyed by the name `Props.custom_kind` carries.
 ///
@@ -898,7 +911,7 @@ impl CustomMeasurers {
     pub fn register(
         &mut self,
         name: impl Into<String>,
-        measurer: impl Fn(SizeProposal) -> Size + 'static,
+        measurer: impl Fn(&CustomMeasureCtx<'_>) -> Size + 'static,
     ) {
         self.measurers.insert(name.into(), Box::new(measurer));
     }
@@ -964,14 +977,14 @@ impl ContentMeasure for HostedContent<'_> {
         }
     }
 
-    fn custom(&mut self, name: &str, proposal: SizeProposal) -> Size {
+    fn custom(&mut self, name: &str, key: Option<&str>, proposal: SizeProposal) -> Size {
         match self.measurers.get(name) {
             // A registered measurer answers instead of the shaper's
             // fallback — and does *not* touch `unsupported_customs`: that
             // set means "asked for and nothing answered", which is no
             // longer true for this name.
-            Some(measurer) => measurer(proposal),
-            None => self.shaper.custom(name, proposal),
+            Some(measurer) => measurer(&CustomMeasureCtx { proposal, key }),
+            None => self.shaper.custom(name, key, proposal),
         }
     }
 }
@@ -979,8 +992,8 @@ impl ContentMeasure for HostedContent<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent, ImageSources, InkRun,
-        TextStyle, Typography,
+        CustomMeasureCtx, CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent,
+        ImageSources, InkRun, TextStyle, Typography,
     };
     use egui::{Color32, Context, FontFamily, FontId, Galley, RawInput};
     use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextRequest};
@@ -1928,7 +1941,7 @@ mod tests {
             gorgon_petra::geom::Size::ZERO
         );
         assert_eq!(
-            s.custom("gauge", SizeProposal::unspecified()),
+            s.custom("gauge", None, SizeProposal::unspecified()),
             gorgon_petra::geom::Size::ZERO
         );
         assert_eq!(s.unsupported_images(), ["icons/fiber.png"]);
@@ -1942,7 +1955,10 @@ mod tests {
         let mut measurers = CustomMeasurers::new();
         measurers.register("gauge", |_| gorgon_petra::geom::Size::new(1.0, 1.0));
         measurers.register("gauge", |_| gorgon_petra::geom::Size::new(2.0, 2.0));
-        let size = measurers.get("gauge").expect("registered")(SizeProposal::unspecified());
+        let size = measurers.get("gauge").expect("registered")(&CustomMeasureCtx {
+            proposal: SizeProposal::unspecified(),
+            key: None,
+        });
         assert_eq!(size, gorgon_petra::geom::Size::new(2.0, 2.0));
     }
 
@@ -1966,7 +1982,7 @@ mod tests {
         measurers.register("gauge", |_| gorgon_petra::geom::Size::new(42.0, 24.0));
         let mut content = HostedContent::new(&mut s, &measurers, &images);
         assert_eq!(
-            content.custom("gauge", SizeProposal::unspecified()),
+            content.custom("gauge", None, SizeProposal::unspecified()),
             gorgon_petra::geom::Size::new(42.0, 24.0)
         );
         assert!(
@@ -1986,7 +2002,7 @@ mod tests {
         let images = ImageSources::new();
         let mut content = HostedContent::new(&mut s, &measurers, &images);
         assert_eq!(
-            content.custom("gauge", SizeProposal::unspecified()),
+            content.custom("gauge", None, SizeProposal::unspecified()),
             gorgon_petra::geom::Size::ZERO
         );
         assert_eq!(s.unsupported_customs(), ["gauge"]);
