@@ -332,6 +332,11 @@ pub(crate) const BORDER_STRONG: &str = "border-strong";
 /// the colour-blindness gate that lets a new hue into the palette at all.
 pub(crate) const BUTTON_DANGER_PRIMARY: &str = "button-danger-primary";
 
+/// The edge around [`BUTTON_DANGER_PRIMARY`]: the fill itself where the fill
+/// clears 3:1 on every layer, a lighter red where it cannot. See
+/// `crate::token::shipped`'s `DANGER_EDGE_TOKEN`.
+pub(crate) const BUTTON_DANGER_EDGE: &str = "button-danger-edge";
+
 /// Carbon's `$text-on-color` / `$icon-on-color`: **white in every theme**,
 /// the ink and the mark that ride a saturated fill.
 ///
@@ -461,6 +466,7 @@ pub(crate) const ALL: &[&str] = &[
     ACCENT_PRIMARY,
     TEXT_ON_ACCENT,
     BUTTON_DANGER_PRIMARY,
+    BUTTON_DANGER_EDGE,
     TEXT_ON_COLOR,
     LAYER_HOVER,
     LAYER_ACTIVE,

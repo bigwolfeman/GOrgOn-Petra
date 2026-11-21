@@ -204,9 +204,10 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::inline_loading::inline_loading_in_button;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED, ICON_DISABLED,
-    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SIZE_MD, SPACING_03, SPACING_05,
-    SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
+    ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_EDGE, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED,
+    ICON_DISABLED, LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SIZE_MD, SPACING_03,
+    SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR,
+    TEXT_PRIMARY, t,
 };
 use super::{disabled, pin_block, stack};
 use crate::geom::{Align, Axis};
@@ -367,13 +368,17 @@ fn chrome(variant: Variant) -> Chrome {
         // pointer touched it. Carbon has `$button-danger-hover`; this
         // library has no name for it, and inventing a second red here is
         // the decision `token::shipped` exists to hold.
+        // The edge is what finds the button where the red fill cannot clear
+        // 3:1 against the layer under it (Gray 90 on layer one, Gray 100 on
+        // layers two and three). Where the fill can, the edge is the fill
+        // and draws nothing new. Operator decision, 2026-11-20.
         Variant::Danger => Chrome {
             background: BUTTON_DANGER_PRIMARY,
             foreground: TEXT_ON_COLOR,
             hover: None,
             active: None,
             disabled_background: Some(BUTTON_DISABLED),
-            border: None,
+            border: Some(BUTTON_DANGER_EDGE),
             shadow: Some(SHADOW_RAISED),
         },
         Variant::Tertiary | Variant::DangerTertiary => Chrome {
@@ -710,9 +715,13 @@ fn armed(
         // `$button-disabled`, but that token is a *fill* here and an edge
         // gone invisible is the thing `controls::empty_mark`'s comment
         // warns about: the control must not stop looking like a control.
+        // A filled variant's edge belongs to its fill, so a disabled one
+        // takes the disabled fill and the edge disappears into it; the
+        // unfilled ones keep a visible disabled boundary.
+        let disabled_edge = chrome.disabled_background.unwrap_or(ICON_DISABLED);
         node.props
             .tokens
-            .insert("border@disabled".into(), t(ICON_DISABLED));
+            .insert("border@disabled".into(), t(disabled_edge));
     }
     if let Some(fill) = chrome.disabled_background {
         // Carbon's `.cds--btn:disabled` fill — `$button-disabled`, the same
@@ -806,11 +815,12 @@ pub fn loading_button(key: impl Into<Key>, label: impl Into<String>, now: f64) -
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED, HEIGHT_2XL,
-        HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, LINK_PRIMARY, PAD_END_NO_ICON, SHADOW_RAISED,
-        SIZE_MD, SPACING_05, SURFACE_BASE, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, button,
-        button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button, danger_ghost_button,
-        danger_tertiary_button, ghost_button, loading_button, primary_button, tertiary_button,
+        ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_EDGE, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED,
+        HEIGHT_2XL, HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, LINK_PRIMARY, PAD_END_NO_ICON,
+        SHADOW_RAISED, SIZE_MD, SPACING_05, SURFACE_BASE, TEXT_ON_ACCENT, TEXT_ON_COLOR,
+        TEXT_PRIMARY, button, button_2xl, button_lg, button_sm, button_xl, button_xs,
+        danger_button, danger_ghost_button, danger_tertiary_button, ghost_button, loading_button,
+        primary_button, tertiary_button,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     // The glyph's tone. `button.rs` itself no longer names it — the mark is
@@ -956,14 +966,15 @@ mod tests {
 
     #[test]
     fn filled_buttons_cast_shadow_raised_and_draw_no_edge() {
-        for node in [
-            button("b", "Save"),
-            primary_button("p", "Save"),
-            danger_button("d", "Delete"),
-        ] {
+        for node in [button("b", "Save"), primary_button("p", "Save")] {
             assert_eq!(token(&node, "shadow"), Some(SHADOW_RAISED));
             assert!(token(&node, "border").is_none());
         }
+        // The danger fill's one exception: its own edge, which is the fill
+        // wherever the fill can be found on its own (operator, 2026-11-20).
+        let danger = danger_button("d", "Delete");
+        assert_eq!(token(&danger, "shadow"), Some(SHADOW_RAISED));
+        assert_eq!(token(&danger, "border"), Some(BUTTON_DANGER_EDGE));
     }
 
     /// Row 066: `Button state loading` — the button stands aside for the
@@ -1025,6 +1036,10 @@ mod tests {
         assert_ne!(token(&danger, "background"), Some(ACCENT_PRIMARY));
         assert_eq!(token(&danger, "background"), Some(BUTTON_DANGER_PRIMARY));
         assert_eq!(token(&danger, "shadow"), Some(SHADOW_RAISED));
+        // The edge that finds the fill where it cannot clear its layer, and
+        // which disappears into the disabled fill.
+        assert_eq!(token(&danger, "border"), Some(BUTTON_DANGER_EDGE));
+        assert_eq!(token(&danger, "border@disabled"), Some(BUTTON_DISABLED));
         // Since round 4 the label is the **only** thing drawn on that fill:
         // the leading mark came off. `text-on-color` measures 5.00:1 on
         // `#da1e28` and `text.primary` measures 4.47:1, so the ink is not a

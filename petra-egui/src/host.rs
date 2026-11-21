@@ -1040,6 +1040,10 @@ pub struct Host<A: App> {
     /// the current registry. Set by [`Host::set_contributions`] and by every
     /// path that can change the registry a contribution is accepted against.
     prepared_stale: bool,
+    /// The tree [`App::view`] answered for the last frame petrified, before
+    /// any contribution was mounted into it. A caret flight compares a new
+    /// view against it ([`Host::flight_view`]).
+    last_authored: Option<ViewNode>,
     /// What the last built frame did with each contribution.
     mounts: Vec<MountReport>,
     /// Host clock for the pass in progress, seconds. Written in [`Host::pass`]
@@ -1405,6 +1409,7 @@ impl<A: App> Host<A> {
             // that clears it is the one place that fills `prepared`. A
             // `false` here would be a second claim about the same fact.
             prepared_stale: true,
+            last_authored: None,
             mounts: Vec::new(),
             pass_clock: 0.0,
             slots: HeldValues::default(),
@@ -1860,15 +1865,6 @@ impl<A: App> Host<A> {
         let _ = self.publish_focus();
         let _ = self.publish_pointer();
 
-        if self.can_reuse_frame(&viewport, had_input) {
-            self.paint_caret_on_last_frame(ctx, snapshot.as_ref());
-            return;
-        }
-
-        // Theme and scale are global inputs to every measurement, so a change
-        // to either invalidates wholesale; content changes are the
-        // application's change set, applied here so no host wiring can skip
-        // the ancestor walk it requires.
         // The clock goes to the application before its change set is read,
         // so a view that depends on the clock can name what the clock moved.
         // Kept on the host too: contributed ambient spinners resubmit from
@@ -1889,16 +1885,39 @@ impl<A: App> Host<A> {
         {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64((at - now).max(0.0)));
         }
+        // Read before the reuse check, not after it: a change set is the
+        // application saying its view may differ, which a pass that paints
+        // the last picture would never show. A shell that applied an undo
+        // from its daemon while the caret flew kept the pre-undo divider
+        // value on screen and in the semantic tree for the rest of the
+        // flight.
+        let changes = self.app.take_changes();
+        let mut authored = None;
+        if self.can_reuse_frame(&viewport, had_input) {
+            match self.flight_view(&changes) {
+                None => {
+                    self.paint_caret_on_last_frame(ctx, snapshot.as_ref());
+                    return;
+                }
+                Some(changed) => authored = Some(changed),
+            }
+        }
+
+        // Theme and scale are global inputs to every measurement, so a change
+        // to either invalidates wholesale; content changes are the
+        // application's change set, applied here so no host wiring can skip
+        // the ancestor walk it requires.
         self.cache
             .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
-        self.cache.apply(&self.app.take_changes());
+        self.cache.apply(&changes);
 
         // The application's tree, then every contributed surface spliced into
         // it. In this order and not the other: a contribution mounts *into* a
         // node the application declares, so there is nothing to mount into
         // until the application has answered. Each contribution was expanded
         // and accepted when it was set; this splices the results.
-        let authored = self.app.view();
+        let authored = authored.unwrap_or_else(|| self.app.view());
+        self.last_authored = Some(authored.clone());
         let app_tree = self.mount_contributions(authored);
         // `refusal_view` only exists to be assigned into on the error arm
         // below; the `let` with no initializer is what lets the borrow
@@ -2156,8 +2175,9 @@ impl<A: App> Host<A> {
     /// Whether this pass can paint the last petrified picture with a new
     /// caret instead of asking the application for a tree.
     ///
-    /// Input, a viewport change, and a running transition each need a new
-    /// petrify. A caret in flight does not: the bar is not a placement.
+    /// Input, a viewport change, a running transition and an application
+    /// change set each need a new petrify. A caret in flight does not: the
+    /// bar is not a placement.
     fn can_reuse_frame(&self, viewport: &Viewport, had_input: bool) -> bool {
         if had_input || !self.caret.is_moving() {
             return false;
@@ -2183,6 +2203,24 @@ impl<A: App> Host<A> {
             return false;
         };
         frame.viewport == *viewport && !wants_frame(frame.transitions)
+    }
+
+    /// The tree a pass that could fly the caret over the last picture has to
+    /// build instead, or [`None`] when the application has not changed.
+    ///
+    /// [`ChangeSet::None`] is the application saying nothing moved, and is
+    /// believed without a view. Any other set is checked against the tree
+    /// the last frame was built from: most applications cannot name the
+    /// nodes that moved and answer [`ChangeSet::All`] on every pass, and a
+    /// view that equals the last one keeps the cheap flight, which skips
+    /// petrify and paint. A view that differs is returned so the pass builds
+    /// it without asking twice.
+    fn flight_view(&mut self, changes: &ChangeSet) -> Option<ViewNode> {
+        if matches!(changes, ChangeSet::None) {
+            return None;
+        }
+        let tree = self.app.view();
+        (self.last_authored.as_ref() != Some(&tree)).then_some(tree)
     }
 
     /// Tick the caret against the last petrified frame and paint that
@@ -5386,6 +5424,12 @@ mod tests {
         intents: Vec<FiredIntent>,
         /// What [`App::view_is_stale`] answers until the next view clears it.
         stale: bool,
+        /// The tree the last [`App::view`] built, so `take_changes` can say
+        /// whether anything moved since.
+        last_tree: Option<ViewNode>,
+        /// Answer [`ChangeSet::All`] on every pass, the way an application
+        /// that cannot name the nodes it moved does.
+        always_all: bool,
     }
 
     /// A focusable, clickable, hoverable text button — a `Role::Button` node
@@ -5437,9 +5481,57 @@ mod tests {
             self.stale
         }
 
+        fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
+            let kind = match event {
+                InputEvent::Key { key, .. } => format!("key:{key:?}"),
+                InputEvent::Text(_) => "text".to_owned(),
+                _ => "other".to_owned(),
+            };
+            let where_ = match route {
+                Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
+                    node.clone()
+                }
+                // This fixture drives `deliver_input`, which routes through
+                // `PointerState::route` → `route_with_surfaces`, never
+                // `route_with_reserved` — so `Reserved` cannot arrive here.
+                // Recorded rather than silently folded into `Unrouted` so a
+                // future caller that does start producing it is forced to
+                // decide what this fixture should say.
+                Route::Reserved { chord, .. } => format!("reserved: {chord}"),
+                Route::Unrouted { reason } => format!("unrouted: {reason}"),
+            };
+            self.seen.push((kind, where_));
+        }
+
+        fn dismissed(&mut self, ids: &[String]) {
+            self.dismissed.extend(ids.iter().cloned());
+        }
+
         fn view(&mut self) -> ViewNode {
             self.view_calls += 1;
             self.stale = false;
+            let tree = self.tree();
+            self.last_tree = Some(tree.clone());
+            tree
+        }
+        // `take_changes` follows `view` in this impl, but `tree` is an
+        // inherent method below so the change set can compare against it
+        // without counting a view.
+        fn take_changes(&mut self) -> ChangeSet {
+            // The fixture does not track which nodes moved. It answers `All`
+            // when the tree it would build differs from the last one, which
+            // is what every test that mutates a field relies on, and `None`
+            // when nothing moved, which is what a reused caret flight needs.
+            if !self.always_all && self.last_tree.as_ref() == Some(&self.tree()) {
+                ChangeSet::None
+            } else {
+                ChangeSet::All
+            }
+        }
+    }
+
+    impl Demo {
+        fn tree(&self) -> ViewNode {
             if self.bad_tree {
                 // Two children with one key: a tree-acceptance violation.
                 return ViewNode::new(NodeKind::Stack, "root")
@@ -5537,39 +5629,6 @@ mod tests {
                 );
             }
             root
-        }
-
-        fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
-            let kind = match event {
-                InputEvent::Key { key, .. } => format!("key:{key:?}"),
-                InputEvent::Text(_) => "text".to_owned(),
-                _ => "other".to_owned(),
-            };
-            let where_ = match route {
-                Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
-                    node.clone()
-                }
-                // This fixture drives `deliver_input`, which routes through
-                // `PointerState::route` → `route_with_surfaces`, never
-                // `route_with_reserved` — so `Reserved` cannot arrive here.
-                // Recorded rather than silently folded into `Unrouted` so a
-                // future caller that does start producing it is forced to
-                // decide what this fixture should say.
-                Route::Reserved { chord, .. } => format!("reserved: {chord}"),
-                Route::Unrouted { reason } => format!("unrouted: {reason}"),
-            };
-            self.seen.push((kind, where_));
-        }
-
-        fn dismissed(&mut self, ids: &[String]) {
-            self.dismissed.extend(ids.iter().cloned());
-        }
-
-        fn take_changes(&mut self) -> ChangeSet {
-            // The fixture does not track which nodes moved; `All` is the
-            // honest conservative answer and is what every test below relies
-            // on when it mutates a field and expects the next pass to see it.
-            ChangeSet::All
         }
     }
 
@@ -6851,6 +6910,57 @@ mod tests {
             host.app().view_calls - before,
             1,
             "a view that cleared its staleness must not be asked for again"
+        );
+    }
+
+    /// An application change set that lands while the caret flies is built
+    /// into the next frame, not held until the flight ends. The shell applied
+    /// an undo from its daemon mid-flight and the frame, and the semantic
+    /// tree projected from it, kept the divider's pre-undo value until the
+    /// caret settled (`divider_journey`). Falsify by making `flight_view`
+    /// answer `None` whatever the set says: the pass paints the last frame.
+    #[test]
+    fn a_change_set_during_a_flight_is_built_into_the_next_frame() {
+        let (ctx, mut host) = construct(Demo::default());
+        settle(&ctx, &mut host, 4);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert!(host.caret().is_moving(), "Tab must start a hop");
+        let seq = host.frame().expect("a frame").seq;
+        host.app_mut().gutter = true;
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            host.frame().expect("a frame").seq > seq,
+            "a change set must be built into the next frame, mid-flight or not"
+        );
+    }
+
+    /// An application that answers [`ChangeSet::All`] on every pass keeps
+    /// the cheap flight while its tree does not change: the view is asked
+    /// for and compared, and nothing is petrified. Falsify by making
+    /// `flight_view` return the tree whenever the set is not `None`: every
+    /// flight pass petrifies a new frame.
+    #[test]
+    fn an_unchanged_view_under_a_blanket_change_set_keeps_the_flight_cheap() {
+        let (ctx, mut host) = construct(Demo {
+            always_all: true,
+            ..Demo::default()
+        });
+        settle(&ctx, &mut host, 4);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert!(host.caret().is_moving(), "Tab must start a hop");
+        let seq = host.frame().expect("a frame").seq;
+        step(&ctx, &mut host, RawInput::default());
+        assert!(host.caret().is_moving(), "the hop must still be flying");
+        assert_eq!(
+            host.frame().expect("a frame").seq,
+            seq,
+            "an unchanged view must not be petrified again mid-flight"
+        );
+        host.app_mut().gutter = true;
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            host.frame().expect("a frame").seq > seq,
+            "a changed view under the same blanket set is petrified"
         );
     }
 

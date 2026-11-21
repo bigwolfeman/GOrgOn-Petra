@@ -33,9 +33,9 @@ pub use name::{TokenName, TokenNameError};
 pub use presenter::Presenter;
 pub use selection::ThemeSelection;
 pub use shipped::{
-    BORDER_SUBTLE_TOKENS, CornerRole, CornerTokens, FIELD_TOKENS, Joined, LAYER_TOKENS,
-    SHADOW_GEOMETRY, ShadowGeometry, corner_for, corners_for, dark, gray10, gray90, gray100, light,
-    shipped, standard_vocabulary, white,
+    BORDER_SUBTLE_TOKENS, CornerRole, CornerTokens, FIELD_TOKENS, Joined, LAYER_STATE_TOKENS,
+    LAYER_TOKENS, SHADOW_GEOMETRY, ShadowGeometry, corner_for, corners_for, dark, gray10, gray90,
+    gray100, light, shipped, standard_vocabulary, white,
 };
 pub use slot::{SlotSchema, SlotSpec, standard_slots};
 pub use snapshot::ThemeSnapshot;

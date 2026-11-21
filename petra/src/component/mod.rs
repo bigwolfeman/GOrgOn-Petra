@@ -350,7 +350,9 @@ pub use ui_shell::{
 
 use std::sync::Arc;
 
-use crate::token::{BORDER_SUBTLE_TOKENS, FIELD_TOKENS, LAYER_TOKENS, TokenName};
+use crate::token::{
+    BORDER_SUBTLE_TOKENS, FIELD_TOKENS, LAYER_STATE_TOKENS, LAYER_TOKENS, TokenName,
+};
 use crate::tree::{InsetRefs, Interaction, Key, NodeKind, ViewNode};
 
 /// The deepest seat [`on_layer`] will honour.
@@ -455,8 +457,10 @@ pub fn also_secondary_click(mut node: ViewNode) -> ViewNode {
 /// # What it does
 ///
 /// `depth` is the [`crate::token::LAYER_TOKENS`] index of the surface this
-/// node is being placed **on**. Only the node's own `background` binding is
-/// rewritten, and only when it names one of the two tones above:
+/// node is being placed **on**. Only the node's own `background` bindings
+/// are rewritten: the resting fill, when it names one of the tones below,
+/// and every `background@<state>` slot with it (see *States follow the
+/// panel*):
 ///
 /// | bound background | becomes |
 /// |---|---|
@@ -469,6 +473,18 @@ pub fn also_secondary_click(mut node: ViewNode) -> ViewNode {
 /// status colour is a deliberate choice by whoever bound it, and a re-seating
 /// pass that second-guessed those would be doing something other than what
 /// its name says.
+///
+/// # States follow the panel
+///
+/// A state slot is rebound with the fill. A `background@<state>` slot that
+/// names a layer fill moves by the same distance as the resting fill. One
+/// that names an interaction-state surface (`layer-hover`, `layer-active`,
+/// `layer-selected`, `layer-selected-hover`, or another layer's version of
+/// them) is rebound to the same state for the layer the node's own surface
+/// lands on ([`crate::token::LAYER_STATE_TOKENS`]): the re-seated fill, or
+/// `depth` for a node with no fill of its own. That is Carbon's contextual
+/// `$layer-hover`. Before it, a menu seated one layer up kept layer one's
+/// hover, which on Gray 90 is `#393939` on the menu's own `#3a3a3a`.
 ///
 /// # Why an ordinal shifts too
 ///
@@ -516,26 +532,62 @@ pub fn also_secondary_click(mut node: ViewNode) -> ViewNode {
 #[must_use]
 pub fn on_layer(mut node: ViewNode, depth: usize) -> ViewNode {
     let depth = depth.min(MAX_LAYER_DEPTH);
-    let step = match node
+    let background = node.props.tokens.get("background").map(TokenName::as_str);
+    // The layer this node's own surface lands on: its re-seated fill, or,
+    // for a node with no fill of its own, the surface it is placed on.
+    let panel = match background {
+        None => depth,
+        Some(name) => match layer_step(name) {
+            Some(step) => (depth + step).min(LAYER_TOKENS.len() - 1),
+            None => return node,
+        },
+    };
+    let rebound: Vec<(String, TokenName)> = node
         .props
         .tokens
-        .get("background")
-        .map(TokenName::as_str)
-        .unwrap_or_default()
-    {
-        tokens::SURFACE_BASE => 0,
-        tokens::SURFACE_RAISED | "surface.layer-one" => 1,
-        "surface.layer-two" => 2,
-        "surface.layer-three" => 3,
-        _ => return node,
-    };
-    // The index, not the argument: `MAX_LAYER_DEPTH` clamps `depth` so that
-    // `depth + 1` stays in range, and an ordinal can ask for three more.
-    let reseated = LAYER_TOKENS[(depth + step).min(LAYER_TOKENS.len() - 1)];
-    node.props
-        .tokens
-        .insert("background".into(), tokens::t(reseated));
+        .iter()
+        .filter(|(slot, _)| *slot == "background" || slot.starts_with("background@"))
+        .filter_map(|(slot, token)| {
+            let token = token.as_str();
+            let next = match layer_step(token) {
+                // A fill: moved by the same distance as the node's own.
+                Some(step) => LAYER_TOKENS[(depth + step).min(LAYER_TOKENS.len() - 1)],
+                // A state surface: the same state, for the layer the node's
+                // panel is on. Layer zero is the ground, which layer one's
+                // states already clear (`state_base`).
+                None => state_on_layer(token, panel)?,
+            };
+            (next != token).then(|| (slot.clone(), tokens::t(next)))
+        })
+        .collect();
+    for (slot, token) in rebound {
+        node.props.tokens.insert(slot, token);
+    }
     node
+}
+
+/// How far from the ground a fill name sits: `0` for `surface.base`, `1` for
+/// `surface.raised` and `surface.layer-one`, and so on. `None` for a name
+/// that is not a layer fill, which [`on_layer`] leaves alone.
+fn layer_step(name: &str) -> Option<usize> {
+    match name {
+        tokens::SURFACE_BASE => Some(0),
+        tokens::SURFACE_RAISED | "surface.layer-one" => Some(1),
+        "surface.layer-two" => Some(2),
+        "surface.layer-three" => Some(3),
+        _ => None,
+    }
+}
+
+/// `token`, an interaction-state surface of any layer, as the same state on
+/// layer `panel` ([`crate::token::LAYER_STATE_TOKENS`]). `None` when `token`
+/// is not a layer state, or when `panel` is the ground.
+fn state_on_layer(token: &str, panel: usize) -> Option<&'static str> {
+    let column = LAYER_STATE_TOKENS
+        .iter()
+        .find_map(|row| row.iter().position(|state| *state == token))?;
+    let row = panel.checked_sub(1)?.min(LAYER_STATE_TOKENS.len() - 1);
+    Some(LAYER_STATE_TOKENS[row][column])
 }
 
 /// Re-seat a mounted subtree's fills against the card it sits on: [`on_layer`]

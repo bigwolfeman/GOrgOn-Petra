@@ -1969,6 +1969,125 @@ fn on_layer_moves_an_ordinal_layer_by_the_same_step_as_the_two_below_it() {
     assert_eq!(seat("surface.layer-three", 1), "surface.layer-three");
 }
 
+/// A re-seated node's states are the states of the layer its panel lands
+/// on: Carbon's contextual `$layer-hover`. A menu row seated one layer up
+/// binds `layer-hover-02`; a fill-less row placed on layer two does too; a
+/// node on the ground keeps layer one's contextual names, which clear the
+/// ground already.
+#[test]
+fn on_layer_rebinds_every_state_to_the_layer_its_panel_lands_on() {
+    use crate::token::{LAYER_STATE_TOKENS, LAYER_TOKENS};
+
+    let states = ["hover", "active", "selected", "selected-hover"];
+    let row = |background: Option<&str>| {
+        let mut node = ViewNode::new(NodeKind::Stack, "row");
+        if let Some(fill) = background {
+            node.props
+                .tokens
+                .insert("background".into(), TokenName::new(fill).unwrap());
+        }
+        for (state, token) in states.iter().zip(LAYER_STATE_TOKENS[0]) {
+            node.props.tokens.insert(
+                format!("background@{state}"),
+                TokenName::new(token).unwrap(),
+            );
+        }
+        node
+    };
+    let bound = |node: &ViewNode, state: &str| {
+        node.props
+            .tokens
+            .get(&format!("background@{state}"))
+            .map(TokenName::as_str)
+            .unwrap()
+            .to_owned()
+    };
+    for depth in 0..=MAX_LAYER_DEPTH {
+        for (fill, step) in [
+            (Some("surface.base"), 0),
+            (Some("surface.raised"), 1),
+            (Some("surface.layer-two"), 2),
+            (None, 0),
+        ] {
+            let seated = on_layer(row(fill), depth);
+            let panel = (depth + step).min(LAYER_TOKENS.len() - 1);
+            for (column, state) in states.iter().enumerate() {
+                let want = LAYER_STATE_TOKENS[panel.saturating_sub(1).min(2)][column];
+                assert_eq!(
+                    bound(&seated, state),
+                    want,
+                    "{fill:?} at depth {depth} lands on layer {panel}, so its \
+                     {state} state is that layer's"
+                );
+            }
+            // States are rebound from whatever layer they named, not only
+            // from layer one: a fill-less row seated twice at one depth is
+            // seated once.
+            if fill.is_none() {
+                let again = on_layer(seated.clone(), depth);
+                assert_eq!(bound(&again, "hover"), bound(&seated, "hover"));
+            }
+        }
+    }
+    // An accent fill's states are its author's choice and stay put.
+    let mut accent = row(Some(ACCENT_PRIMARY));
+    accent = on_layer(accent, 2);
+    assert_eq!(bound(&accent, "hover"), LAYER_STATE_TOKENS[0][0]);
+}
+
+/// Every shipped component, seated on every layer, paints each state at
+/// least `MIN_STATE_GAP` off its own panel, in every theme. The menu row on
+/// a layer-two panel kept layer one's hover before, `#393939` on Gray 90's
+/// `#3a3a3a`. Falsify by dropping the state rebinding from `on_layer`.
+#[test]
+fn every_seated_state_clears_its_own_panel_in_every_theme() {
+    use crate::token::colourblind::{shipped_themes, theme_color};
+    use crate::token::shipped::MIN_STATE_GAP;
+    use crate::token::{LAYER_STATE_TOKENS, TokenValue};
+
+    let lightness = |c: crate::token::ColorValue| {
+        let y = c.relative_luminance();
+        if y > 216.0 / 24389.0 {
+            116.0 * y.cbrt() - 16.0
+        } else {
+            y * 24389.0 / 27.0
+        }
+    };
+    let is_state = |token: &str| LAYER_STATE_TOKENS.iter().flatten().any(|s| *s == token);
+    let mut checked = 0;
+    for depth in 0..=MAX_LAYER_DEPTH {
+        let tree = super::seated(full_gallery(), depth);
+        for (label, theme) in shipped_themes() {
+            walk(&tree, "", &mut |path, props| {
+                let Some(fill) = props.tokens.get("background") else {
+                    return;
+                };
+                if !matches!(
+                    theme.value(fill),
+                    Some(TokenValue::Color(c)) if c.a >= 1.0
+                ) || !fill.as_str().starts_with("surface.")
+                {
+                    return;
+                }
+                let panel = lightness(theme_color(&theme, fill.as_str()));
+                for (slot, token) in &props.tokens {
+                    if !slot.starts_with("background@") || !is_state(token.as_str()) {
+                        continue;
+                    }
+                    let gap = (lightness(theme_color(&theme, token.as_str())) - panel).abs();
+                    checked += 1;
+                    assert!(
+                        gap >= MIN_STATE_GAP,
+                        "{label}, depth {depth}: {path} paints {slot} = {token} \
+                         {gap:.2} L* off its {fill} panel, under {MIN_STATE_GAP}"
+                    );
+                }
+            });
+        }
+    }
+    assert!(checked > 0, "no seated state was checked");
+}
+
 #[test]
 fn on_layer_leaves_every_other_fill_alone_and_never_touches_an_edge() {
     for depth in 0..=MAX_LAYER_DEPTH {

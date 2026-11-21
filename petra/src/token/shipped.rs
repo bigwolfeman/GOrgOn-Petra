@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use crate::token::ThemeMode;
 use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
+use crate::token::measure::MIN_SURFACE_CONTRAST;
 use crate::token::name::TokenName;
 use crate::token::status::{StatusShape, StatusToken};
 use crate::token::theme::{Theme, ThemeId};
@@ -998,6 +999,20 @@ fn step_away_from_ground(base: [u8; 3], delta: f32, mode: ThemeMode) -> [u8; 3] 
 /// holds it there rather than to this comment.
 const HOVER_STEP: f32 = 4.0;
 
+/// How far, in CIE L\*, a ladder rung may land off its nominal step: the
+/// rounding of a stepped grey to the nearest sRGB level. The ladder test
+/// (`the_interaction_ladder_is_ordered_and_visible`) holds every rung within
+/// it.
+#[cfg(test)]
+const LADDER_SLACK: f32 = 0.6;
+
+/// The least CIE L\* gap an interaction state may keep from the surface it
+/// paints over: the hover step, less the rounding a rung is allowed.
+/// Closer than this, a hovered row reads as the panel itself. Held by the
+/// state tests in this file and in `component`'s.
+#[cfg(test)]
+pub(crate) const MIN_STATE_GAP: f32 = HOVER_STEP - LADDER_SLACK;
+
 /// How far a selected state moves a surface, in CIE L\*.
 ///
 /// Louder than [`HOVER_STEP`] because selection persists and hover does not:
@@ -1152,6 +1167,48 @@ const STATE_TOKENS: [(&str, f32); 3] = [
 /// See [`STATE_TOKENS`]. Split out because the fourth surface state steps
 /// past a full layer and reads differently for it.
 const ACTIVE_TOKEN: &str = "layer-active";
+
+/// The interaction-state surfaces of every layer a component can sit on,
+/// in [`LAYER_TOKENS`] order from layer one: hover, active, selected,
+/// selected-hover.
+///
+/// **Carbon's states are contextual, and so are these.** Carbon publishes
+/// `$layer-hover-01`, `-02` and `-03` (and the same for active, selected and
+/// selected-hover), and its `layer` mixin resolves a component's
+/// `$layer-hover` to the one for the layer it sits on. Petra has no ambient
+/// layer counter, so [`crate::component::on_layer`] does the resolving: a
+/// node re-seated onto layer `k` has its state slots rebound to row `k - 1`
+/// of this table. Without it, a menu seated one layer up painted Gray 90's
+/// layer-one hover `#393939` on its own `#3a3a3a` panel, where nobody can
+/// see it.
+///
+/// Layer one keeps the contextual names (`layer-hover`, ...), which is what
+/// Carbon's contextual tokens resolve to at the default depth and what every
+/// component binds before it is re-seated, so a node on layer one keeps its
+/// digest. Each row steps off [`state_base`] for its own layer.
+pub const LAYER_STATE_TOKENS: [[&str; 4]; 3] = [
+    [
+        "layer-hover",
+        ACTIVE_TOKEN,
+        "layer-selected",
+        "layer-selected-hover",
+    ],
+    [
+        "layer-hover-02",
+        "layer-active-02",
+        "layer-selected-02",
+        "layer-selected-hover-02",
+    ],
+    [
+        "layer-hover-03",
+        "layer-active-03",
+        "layer-selected-03",
+        "layer-selected-hover-03",
+    ],
+];
+
+/// The ladder step each column of [`LAYER_STATE_TOKENS`] takes.
+const LAYER_STATE_STEPS: [f32; 4] = [HOVER_STEP, ACTIVE_STEP, SELECTED_STEP, SELECTED_HOVER_STEP];
 
 /// Carbon: *"not considered a proper layer but a supporting color for
 /// `$layer` inside of components"* — so it is **not** in [`LAYER_TOKENS`] and
@@ -1320,14 +1377,62 @@ const ON_COLOUR_TOKEN: &str = "text-on-color";
 /// See [`ON_COLOUR_TOKEN`].
 const ON_COLOUR: [u8; 3] = [0xff, 0xff, 0xff];
 
+/// The edge a danger button draws around [`DANGER_FILL_TOKEN`].
+///
+/// **The fill cannot always be found on its own, and on Gray 90 no fill
+/// can.** A white label at 4.5:1 caps the fill's luminance under the 3:1
+/// floor against Gray 90's layer one
+/// ([`tests::no_white_labelled_fill_clears_gray90_layer_one`]), and Gray
+/// 100's `#da1e28` falls under 3:1 on layers two and three. SC 1.4.11 accepts
+/// a boundary as a component's visual indicator, so the button keeps
+/// Carbon's fill and label and draws this edge, which clears 3:1 on every
+/// layer. Decided by the operator, 2026-11-20 ("lighter red sounds fine").
+///
+/// Valued per theme by [`danger_edge`]: the fill itself where the fill
+/// already clears every layer (White, Gray 10), so the picture there is
+/// unchanged, and otherwise the quietest lighter red that clears them all.
+const DANGER_EDGE_TOKEN: &str = "button-danger-edge";
+
+/// [`DANGER_EDGE_TOKEN`]'s value: `fill` if it clears
+/// [`MIN_SURFACE_CONTRAST`] against every one of `layers`, else the first
+/// step of `fill` toward white that does.
+///
+/// Toward white because every layer it must clear is darker than the fill
+/// where the fill fails (the dark themes); "first step" for the reason
+/// [`quietest_grey_clearing`] gives: an edge louder than it needs to be is a
+/// defect, not a margin.
+fn danger_edge(fill: [u8; 3], layers: &[[u8; 3]; 4]) -> [u8; 3] {
+    let clears = |rgb: [u8; 3]| {
+        layers
+            .iter()
+            .all(|layer| contrast_of(rgb, *layer) >= MIN_SURFACE_CONTRAST)
+    };
+    (0..=255_u16)
+        .map(|t| {
+            fill.map(|c| {
+                let c = u16::from(c);
+                #[allow(clippy::cast_possible_truncation)]
+                let mixed = (c + (255 - c) * t / 255) as u8;
+                mixed
+            })
+        })
+        .find(|rgb| clears(*rgb))
+        .expect("white clears 3:1 on every dark layer")
+}
+
 /// Assign the two names that do not move between themes: the Carbon danger
 /// fill and the always-white on-colour ink.
 ///
 /// One function called by both themes, for the reason [`insert_layer_set`]
 /// is: a hand-copied pair is a pair that drifts, and "the same in every
 /// theme" is the entire content of both of these tokens.
-fn insert_on_colour_pair(values: &mut BTreeMap<TokenName, TokenValue>, danger: [u8; 3]) {
+fn insert_on_colour_pair(
+    values: &mut BTreeMap<TokenName, TokenValue>,
+    danger: [u8; 3],
+    layers: &[[u8; 3]; 4],
+) {
     values.insert(name(DANGER_FILL_TOKEN), opaque(danger));
+    values.insert(name(DANGER_EDGE_TOKEN), opaque(danger_edge(danger, layers)));
     values.insert(name(ON_COLOUR_TOKEN), opaque(ON_COLOUR));
 }
 
@@ -1403,8 +1508,9 @@ fn insert_field_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
     }
 }
 
-/// Where the interaction ladder starts: of the ground and
-/// `surface.layer-one`, the one further in `mode`'s direction.
+/// Where layer `layer`'s interaction ladder starts: of that layer and the
+/// one under it (for layer one, the ground and `surface.layer-one`), the one
+/// further in `mode`'s direction.
 ///
 /// **A state must clear both surfaces a row can sit on, so it starts past
 /// both.** The dark sets always step up, so this is `layers[1]` there. The
@@ -1415,33 +1521,35 @@ fn insert_field_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
 /// ladders on the same grey for the same reason: `$layer-hover-01` is
 /// `gray-10-hover` and `$layer-selected-01` is `gray-20` in White and in Gray
 /// 10 alike (`@carbon/themes` `tokens/themes/{white,g10}/theme.tokens.json`).
-fn state_base(layers: &[[u8; 3]; 4], mode: ThemeMode) -> [u8; 3] {
-    let (ground, layer) = (layers[0], layers[1]);
-    let darker = lightness_of(ground) < lightness_of(layer);
-    match (mode, darker) {
-        (ThemeMode::Light, true) | (ThemeMode::Dark, false) => ground,
-        _ => layer,
+/// The same holds a layer up: a row on a layer-two panel must clear the panel
+/// and the layer-one card the panel sits on.
+fn state_base(layers: &[[u8; 3]; 4], mode: ThemeMode, layer: usize) -> [u8; 3] {
+    let (under, panel) = (layers[layer - 1], layers[layer]);
+    let under_is_darker = lightness_of(under) < lightness_of(panel);
+    match (mode, under_is_darker) {
+        (ThemeMode::Light, true) | (ThemeMode::Dark, false) => under,
+        _ => panel,
     }
 }
 
-/// Assign the interaction-state surfaces by walking the ladder off
+/// Assign the interaction-state surfaces of every layer
+/// ([`LAYER_STATE_TOKENS`]) by walking the ladder off each layer's
 /// [`state_base`], in `mode`'s direction.
 fn insert_state_set(
     values: &mut BTreeMap<TokenName, TokenValue>,
     layers: &[[u8; 3]; 4],
     mode: ThemeMode,
 ) {
-    let base = state_base(layers, mode);
-    for (token, delta) in STATE_TOKENS {
-        values.insert(
-            name(token),
-            opaque(step_away_from_ground(base, delta, mode)),
-        );
+    for (row, tokens) in LAYER_STATE_TOKENS.iter().enumerate() {
+        let base = state_base(layers, mode, row + 1);
+        for (token, delta) in tokens.iter().zip(LAYER_STATE_STEPS) {
+            values.insert(
+                name(token),
+                opaque(step_away_from_ground(base, delta, mode)),
+            );
+        }
     }
-    values.insert(
-        name(ACTIVE_TOKEN),
-        opaque(step_away_from_ground(base, ACTIVE_STEP, mode)),
-    );
+    let base = state_base(layers, mode, 1);
 
     let accent_surface = step_away_from_ground(base, SELECTED_STEP, mode);
     values.insert(name(LAYER_ACCENT_TOKEN), opaque(accent_surface));
@@ -2533,6 +2641,11 @@ pub fn standard_vocabulary() -> Vocabulary {
     for (token, _) in STATE_TOKENS {
         vocab.declare(DesignToken::new(name(token), TokenKind::Color));
     }
+    // Layers two and three's states; layer one's are the contextual names
+    // above. See `LAYER_STATE_TOKENS`.
+    for token in LAYER_STATE_TOKENS[1..].iter().flatten() {
+        vocab.declare(DesignToken::new(name(token), TokenKind::Color));
+    }
     for (token, _) in LAYER_ACCENT_STATE_TOKENS {
         vocab.declare(DesignToken::new(name(token), TokenKind::Color));
     }
@@ -2549,6 +2662,7 @@ pub fn standard_vocabulary() -> Vocabulary {
         // for the black toggle knob that ruled `text.on-accent` out as an
         // on-colour ink.
         DANGER_FILL_TOKEN,
+        DANGER_EDGE_TOKEN,
         ON_COLOUR_TOKEN,
         // The disabled toggle track. Its own Carbon value, not a fade of an
         // existing tone — see `BUTTON_DISABLED_TOKEN`.
@@ -2628,7 +2742,7 @@ fn build(palette: &Palette) -> Theme {
         palette.on_accent(),
         inverse.text[0],
     );
-    insert_on_colour_pair(&mut values, palette.danger);
+    insert_on_colour_pair(&mut values, palette.danger, palette.layers);
     // See `BUTTON_DISABLED_TOKEN`: Carbon's own value, not a fade.
     let (disabled_rgb, disabled_alpha) = palette.button_disabled;
     values.insert(
@@ -2753,15 +2867,15 @@ pub fn dark() -> Theme {
 mod tests {
     use super::{
         ACCENT_TOKEN, ACTIVE_STEP, ACTIVE_TOKEN, BORDER_INTERACTIVE_TOKEN, BORDER_STRONG_TOKEN,
-        BORDER_SUBTLE_TOKENS, BORDER_TOKEN, CornerRole, DANGER_FILL_TOKEN, DARK_LAYERS,
-        FIELD_TOKENS, HOVER_STEP, ICON_TOKENS, Joined, LAYER_ACCENT_STATE_TOKENS,
-        LAYER_ACCENT_TOKEN, LAYER_TOKENS, LIGHT_LAYERS, LINK_TOKEN, M, MIN_CONTROL_BOUNDARY,
-        MIN_DIVIDER_CONTRAST, MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS,
-        RULE_HIGHLIGHT_DELTA, RULE_SHADOW_DELTA, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP,
-        SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES,
-        SPACING_RAMP, SPRING_SET, STATE_TOKENS, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for,
-        corners_for, dark, light, lightness_of, opaque_value, rule_stroke, shipped,
-        standard_vocabulary,
+        BORDER_SUBTLE_TOKENS, BORDER_TOKEN, CornerRole, DANGER_EDGE_TOKEN, DANGER_FILL_TOKEN,
+        DARK_LAYERS, FIELD_TOKENS, HOVER_STEP, ICON_TOKENS, Joined, LADDER_SLACK,
+        LAYER_ACCENT_STATE_TOKENS, LAYER_ACCENT_TOKEN, LAYER_STATE_TOKENS, LAYER_TOKENS,
+        LIGHT_LAYERS, LINK_TOKEN, M, MIN_CONTROL_BOUNDARY, MIN_DIVIDER_CONTRAST, MIN_STATE_GAP,
+        MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS, RULE_HIGHLIGHT_DELTA,
+        RULE_SHADOW_DELTA, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP, SELECTED_STEP, SHADOW_GEOMETRY,
+        SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES, SPACING_RAMP, SPRING_SET,
+        SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for, corners_for, dark, light, lightness_of,
+        opaque_value, rule_stroke, shipped, standard_vocabulary,
     };
     use crate::token::ThemeId;
     use crate::token::ThemeMode;
@@ -4368,6 +4482,9 @@ mod tests {
     ///
     /// Falsify by lowering Gray 90's layer one to `#2c2c2c`: the floor drops
     /// under the cap and this test reports that a fill now exists.
+    ///
+    /// The operator chose the edge on 2026-11-20, so the last assertion pins
+    /// that the edge does what the fill cannot on this layer.
     #[test]
     fn no_white_labelled_fill_clears_gray90_layer_one() {
         let theme = theme_named("g90");
@@ -4385,6 +4502,54 @@ mod tests {
         // pair this palette chose.
         let fill = theme_color(&theme, DANGER_FILL_TOKEN).relative_luminance();
         assert!(fill <= cap, "g90: the danger fill no longer carries white");
+        // The edge carries the floor instead.
+        let edge = contrast(
+            theme_color(&theme, DANGER_EDGE_TOKEN),
+            theme_color(&theme, LAYER_TOKENS[1]),
+        );
+        assert!(
+            edge >= MIN_SURFACE_CONTRAST,
+            "g90: the danger edge is {edge:.2}:1 on layer one, under the floor the \
+             fill cannot reach"
+        );
+    }
+
+    /// The danger button's edge clears SC 1.4.11's 3:1 on every layer in
+    /// every theme, so the button is findable wherever it lands even where
+    /// its fill is not. Where the fill already clears every layer the edge
+    /// is the fill, so White and Gray 10 draw what they drew. And it stays
+    /// red: a lighter red, never a grey a reader could take for an ordinary
+    /// edge. Falsify by valuing the edge as the fill everywhere: Gray 90
+    /// fails on layer one and Gray 100 on layers two and three.
+    #[test]
+    fn the_danger_edge_finds_the_button_on_every_layer() {
+        for (label, _) in DEEPEST_DANGER_LAYER {
+            let theme = theme_named(label);
+            let fill = theme_color(&theme, DANGER_FILL_TOKEN);
+            let edge = theme_color(&theme, DANGER_EDGE_TOKEN);
+            let fill_clears_all = LAYER_TOKENS
+                .iter()
+                .all(|t| contrast(fill, theme_color(&theme, t)) >= MIN_SURFACE_CONTRAST);
+            for token in LAYER_TOKENS {
+                let ratio = contrast(edge, theme_color(&theme, token));
+                assert!(
+                    ratio >= MIN_SURFACE_CONTRAST,
+                    "{label}: {DANGER_EDGE_TOKEN} is {ratio:.2}:1 on {token}, under \
+                     the {MIN_SURFACE_CONTRAST}:1 floor it exists to carry"
+                );
+            }
+            if fill_clears_all {
+                assert_eq!(
+                    edge, fill,
+                    "{label}: the fill clears every layer, so the edge is the fill"
+                );
+            } else {
+                assert!(
+                    edge.r > edge.g + 0.2 && edge.r > edge.b + 0.2,
+                    "{label}: the edge {edge:?} is no longer a red"
+                );
+            }
+        }
     }
 
     /// [`DANGER_FILL_TOKEN`] carries its label at the body-text floor, is
@@ -5092,24 +5257,59 @@ mod tests {
         }
     }
 
-    /// A state surface is told apart from both surfaces a row sits on.
+    /// A state surface is told apart from both surfaces a row on its layer
+    /// sits over, on every layer and in every theme.
     ///
-    /// Gray 10's hover sat one sRGB level off its ground (`#f3f3f3` on
-    /// `#f2f2f2`): a hovered row on a card read as a hole through to the
-    /// page. Every state token must sit at least the hover step away from the
-    /// ground and from layer one, in every theme. Falsify by anchoring
-    /// `state_base` on `layers[1]` again: Gray 10 fails here.
+    /// Two defects this holds. Gray 10's hover sat one sRGB level off its
+    /// ground (`#f3f3f3` on `#f2f2f2`): a hovered row on a card read as a
+    /// hole through to the page. And a menu re-seated onto layer two kept
+    /// layer one's hover, `#393939` on Gray 90's `#3a3a3a`. Row `k` of
+    /// `LAYER_STATE_TOKENS` must sit at least `MIN_STATE_GAP` off layer `k`
+    /// and off the layer under it. Falsify by anchoring `state_base` on the
+    /// panel alone (Gray 10 fails) or by giving row two row one's values
+    /// (Gray 90 fails).
     #[test]
-    fn every_state_clears_the_ground_and_layer_one() {
+    fn every_state_clears_its_panel_and_the_layer_under_it() {
         for (label, theme) in themes() {
-            for surface in [LAYER_TOKENS[0], LAYER_TOKENS[1]] {
-                let under = lightness_of_token(&theme, surface);
-                for (token, _) in STATE_TOKENS {
-                    let gap = (lightness_of_token(&theme, token) - under).abs();
+            for (row, states) in LAYER_STATE_TOKENS.iter().enumerate() {
+                for surface in [LAYER_TOKENS[row], LAYER_TOKENS[row + 1]] {
+                    let under = lightness_of_token(&theme, surface);
+                    for token in states {
+                        let gap = (lightness_of_token(&theme, token) - under).abs();
+                        assert!(
+                            gap >= MIN_STATE_GAP,
+                            "{label}/{token} sits {gap:.2} L* off {surface}; under \
+                             {MIN_STATE_GAP} it reads as that surface"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every layer's states climb the same ladder off their own base: row
+    /// `k` is the layer-one ladder moved to layer `k`, in the theme's
+    /// direction, within `LADDER_SLACK`.
+    #[test]
+    fn every_layer_climbs_the_same_ladder() {
+        let steps = [HOVER_STEP, ACTIVE_STEP, SELECTED_STEP, SELECTED_HOVER_STEP];
+        for (label, theme) in themes() {
+            let sign = mode_sign(theme.mode());
+            for (row, states) in LAYER_STATE_TOKENS.iter().enumerate() {
+                let pair = [LAYER_TOKENS[row], LAYER_TOKENS[row + 1]]
+                    .map(|t| lightness_of_token(&theme, t));
+                let base = if sign < 0.0 {
+                    pair[0].min(pair[1])
+                } else {
+                    pair[0].max(pair[1])
+                };
+                for (token, step) in states.iter().zip(steps) {
+                    let moved = lightness_of_token(&theme, token) - base;
                     assert!(
-                        gap >= HOVER_STEP - 0.6,
-                        "{label}/{token} sits {gap:.2} L* off {surface}; under \
-                         the {HOVER_STEP} hover step it reads as that surface"
+                        (moved - sign * step).abs() < LADDER_SLACK,
+                        "{label}/{token} moved {moved:.2} L* off its base; the \
+                         ladder asks for {:.2}",
+                        sign * step
                     );
                 }
             }
@@ -5191,7 +5391,7 @@ mod tests {
             for (token, step) in ladder {
                 let moved = lightness_of_token(&theme, token) - base;
                 assert!(
-                    (moved - sign * step).abs() < 0.6,
+                    (moved - sign * step).abs() < LADDER_SLACK,
                     "{label}/{token} moved {moved:.2} L* off its base; \
                      the ladder asks for {:.2}. Sign wrong means the state moves \
                      toward the theme's own ground, where there is no room.",
@@ -5249,7 +5449,7 @@ mod tests {
             for (token, step) in LAYER_ACCENT_STATE_TOKENS {
                 let moved = lightness_of_token(&theme, token) - accent;
                 assert!(
-                    (moved - sign * step).abs() < 0.6,
+                    (moved - sign * step).abs() < LADDER_SLACK,
                     "{label}/{token} moved {moved:.2} L* off {LAYER_ACCENT_TOKEN}, \
                      not the {:.2} the ladder asks for",
                     sign * step
@@ -5835,6 +6035,9 @@ mod tests {
                     // ΔE*ab-separated from the button tone it has to be told
                     // apart from under both red-green simulations.
                     || name == DANGER_FILL_TOKEN
+                    // Its edge, gated by
+                    // `the_danger_edge_finds_the_button_on_every_layer`.
+                    || name == DANGER_EDGE_TOKEN
                     || name == BORDER_INTERACTIVE_TOKEN
                     || name == RING_TOKEN
                     || name == "focus-inverse"
