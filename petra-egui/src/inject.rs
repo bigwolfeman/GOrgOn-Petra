@@ -684,9 +684,8 @@ fn push_key(raw: &mut RawInput, key: KeyCode, modifiers: Modifiers) -> Result<()
         raw.events.push(Event::Copy);
         return Ok(());
     }
-    // Cut is the same seam and costs two lines. Petra has nothing that cuts,
-    // so `EventTranslator` drops this and counts it — which is a gap on the
-    // record rather than a driver quietly disagreeing with every window.
+    // Cut is the same seam and costs two lines. `EventTranslator` turns it
+    // into `InputEvent::Cut`, as a window's own cut command arrives.
     if is_cut_command(mods, egui_key) {
         raw.events.push(Event::Cut);
         return Ok(());
@@ -1280,9 +1279,7 @@ mod tests {
         .expect("the copy chord injects");
         assert_eq!(raw.events, vec![egui::Event::Copy]);
 
-        // Cut, the same seam. Petra has nothing that cuts, so this reaches
-        // the translator's dropped-event count rather than a handler — which
-        // is a gap on the record, not a driver disagreeing with every window.
+        // Cut, the same seam: the translator makes it `InputEvent::Cut`.
         let mut raw = RawInput::default();
         super::push_key(
             &mut raw,

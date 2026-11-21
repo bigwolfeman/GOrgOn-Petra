@@ -175,8 +175,9 @@ pub trait ContentMeasure {
     fn fragments(&mut self, req: &TextRequest<'_>, range: Range<usize>) -> Vec<Rect>;
     /// Size an image for an offer.
     fn image(&mut self, source: &str, proposal: SizeProposal) -> Size;
-    /// Size a host-registered custom node for an offer.
-    fn custom(&mut self, name: &str, proposal: SizeProposal) -> Size;
+    /// Size a host-registered custom node for an offer. `key` is the node's
+    /// `Props::custom_key`, so one measurer can size many instances.
+    fn custom(&mut self, name: &str, key: Option<&str>, proposal: SizeProposal) -> Size;
 }
 
 /// Materialization of virtualized collection rows.
@@ -1149,6 +1150,10 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         },
         custom: match node.kind {
             NodeKind::Custom => props.custom_kind.clone(),
+            _ => None,
+        },
+        custom_key: match node.kind {
+            NodeKind::Custom => props.custom_key.clone(),
             _ => None,
         },
         canvas: match node.kind {

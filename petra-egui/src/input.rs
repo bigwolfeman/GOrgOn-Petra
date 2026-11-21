@@ -201,7 +201,10 @@ impl EventTranslator {
             // Typed text, pasted text, and a committed composition are the same
             // thing to a field: text that arrived. Reconstructing it from key
             // events instead is how a toolkit gets every non-Latin script wrong.
-            Event::Text(text) | Event::Paste(text) => Some(InputEvent::Text(text.clone())),
+            Event::Text(text) => Some(InputEvent::Text(text.clone())),
+            // Kept apart from typing (`InputEvent::Paste`); the host turns it
+            // back into `Text` for every node but a raw claimant.
+            Event::Paste(text) => Some(InputEvent::Paste(text.clone())),
             Event::Ime(ime) => match ime {
                 egui::ImeEvent::Commit(text) => Some(InputEvent::Text(text.clone())),
                 _ => {
@@ -218,6 +221,10 @@ impl EventTranslator {
             // `Host::copy_selection` unreachable outside a test that
             // synthesized a keystroke by hand.
             Event::Copy => Some(InputEvent::Copy),
+            // The cut command, pushed by `egui-winit` instead of the
+            // keystroke, as `Copy` is. Dropped until 2026-11-20, so Ctrl+X
+            // reached nothing in a real window.
+            Event::Cut => Some(InputEvent::Cut),
             Event::WindowFocused(true) => Some(InputEvent::WindowFocused),
             Event::WindowFocused(false) => Some(InputEvent::WindowBlurred),
             other => {
@@ -573,11 +580,17 @@ mod tests {
         let mut t = translator();
         for event in [
             Event::Text("あ".into()),
-            Event::Paste("あ".into()),
             Event::Ime(egui::ImeEvent::Commit("あ".into())),
         ] {
             assert_eq!(t.translate(&event), Some(InputEvent::Text("あ".into())));
         }
+        // A paste keeps its own name, and the host turns it back into text
+        // for every node but a raw claimant (`InputEvent::delivered`).
+        assert_eq!(
+            t.translate(&Event::Paste("あ".into())),
+            Some(InputEvent::Paste("あ".into()))
+        );
+        assert_eq!(t.translate(&Event::Cut), Some(InputEvent::Cut));
     }
 
     /// A composition in progress is not committed text. Delivering it would

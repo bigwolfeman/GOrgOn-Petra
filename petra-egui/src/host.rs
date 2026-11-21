@@ -2896,6 +2896,7 @@ impl<A: App> Host<A> {
                 event,
                 InputEvent::Key { pressed: true, .. }
                     | InputEvent::Text(_)
+                    | InputEvent::Paste(_)
                     | InputEvent::PointerPressed { .. }
                     | InputEvent::Scroll { .. }
             )
@@ -3054,8 +3055,13 @@ impl<A: App> Host<A> {
                         // `Route::Raw`: the raw claimant receives the event
                         // verbatim — [`App::handle`] is that delivery — with
                         // nothing interpreted on the way past (FR-020).
-                        self.app
-                            .handle(event, &routing.outcome.route, self.last_frame.as_ref());
+                        // A paste stays a paste here and only here
+                        // (`InputEvent::delivered`).
+                        self.app.handle(
+                            &event.delivered(&routing.outcome.route),
+                            &routing.outcome.route,
+                            self.last_frame.as_ref(),
+                        );
                     }
                     self.app.decided(&decision);
                     if self.picture_must_rebuild(event) {
@@ -3079,7 +3085,13 @@ impl<A: App> Host<A> {
             // Re-borrowed after the match: `return_focus_to_shell` above
             // takes `&mut self`, so no read of `last_frame` may span it.
             let frame = self.last_frame.as_ref();
-            self.app.handle(event, &routing.outcome.route, frame);
+            // Not `Raw`, so a paste arrives as typed text
+            // (`InputEvent::delivered`).
+            self.app.handle(
+                &event.delivered(&routing.outcome.route),
+                &routing.outcome.route,
+                frame,
+            );
             // The cause, then the consequence: a component hears the release
             // (or the blur, or the Escape) and then hears what it did to the
             // gesture, so it never has to infer the second from the first.
@@ -5035,6 +5047,7 @@ mod tests {
         petra_layer, refusal_view,
     };
     use crate::testing::{boot, boot_in, boot_with, construct, construct_with, headless, step};
+    use crate::text::CustomMeasureCtx;
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::frame::PetrifiedFrame;
     use gorgon_petra::geom::{Point, Rect, Scale, Size};
@@ -5549,6 +5562,7 @@ mod tests {
                 return ViewNode::new(NodeKind::Stack, "root").child(
                     ViewNode::new(NodeKind::Custom, "gauge").with_props(Props {
                         custom_kind: Some("gauge".to_owned()),
+                        custom_key: Some("gauge:7".to_owned()),
                         ..Props::default()
                     }),
                 );
@@ -6430,15 +6444,33 @@ mod tests {
         let (ctx, mut host) = construct(Demo::default());
         host.app_mut().custom = true;
         host.registry_mut().register_custom_kind("gauge");
+        // The answer depends on the node's `custom_key`, so the placed rect
+        // below proves the key reached the measurer.
         host.measurers_mut()
-            .register("gauge", |_proposal: SizeProposal| Size::new(42.0, 24.0));
+            .register("gauge", |asked: &CustomMeasureCtx<'_>| {
+                if asked.key == Some("gauge:7") {
+                    Size::new(42.0, 24.0)
+                } else {
+                    Size::new(1.0, 1.0)
+                }
+            });
+        let painted = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let seen = std::rc::Rc::clone(&painted);
         // A painter too, only so `paint_and_bake_scene`'s completeness check
         // (`PaintReport::is_complete`) does not fail this pass over an
         // unrelated gap: an unpainted `custom` node is `silent` regardless
         // of how it measured. The assertion this test cares about is the
         // placed rect below, not paint completeness.
-        host.painters_mut().register("gauge", |_painter, _ctx| true);
+        host.painters_mut().register("gauge", move |_painter, ctx| {
+            *seen.borrow_mut() = ctx.key.map(str::to_owned);
+            true
+        });
         step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            painted.borrow().as_deref(),
+            Some("gauge:7"),
+            "the painter reads which instance it draws"
+        );
 
         let frame = host.frame().expect("a frame");
         let placement = frame

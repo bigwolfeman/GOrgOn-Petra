@@ -336,6 +336,7 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         text,
         image,
         custom,
+        custom_key,
         tokens,
         caret,
         canvas,
@@ -485,6 +486,14 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
     if let Some(at) = insertion {
         w.text("insertion");
         w.u64(*at as u64);
+    }
+    // A custom node's instance key, after the caret bar and only when there
+    // is one, for the same reason: every frame drawn before the field existed
+    // keeps its digest. Both markers are length-prefixed text, so a stream
+    // with one cannot read as a stream with the other.
+    if let Some(key) = custom_key {
+        w.text("custom_key");
+        w.text(key);
     }
     truncate64(&blake3::hash(&w.finish()))
 }
@@ -1490,6 +1499,9 @@ mod tests {
             }),
             image: Some("logo.png".into()),
             custom: Some("sparkline".into()),
+            // `None`: a key is written only when present, so the pinned
+            // vector below predates the field and must not move with it.
+            custom_key: None,
             tokens,
             caret: None,
             canvas: None,
@@ -1888,6 +1900,9 @@ mod tests {
             ("image → none", |c| c.image = None),
             ("custom", |c| c.custom = Some("gauge".into())),
             ("custom → none", |c| c.custom = None),
+            // `rich_content` carries no key (its pinned vector predates the
+            // field), so the one row is the absent-to-present move.
+            ("custom_key", |c| c.custom_key = Some("sparkline:2".into())),
             ("tokens: rebound value", |c| {
                 c.tokens.insert("background".into(), "status.down".into());
             }),
@@ -2127,6 +2142,7 @@ mod tests {
             }),
             image: None,
             custom: None,
+            custom_key: None,
             tokens: BTreeMap::new(),
             caret: None,
             canvas: None,
@@ -2146,6 +2162,7 @@ mod tests {
             text: None,
             image: Some(image.to_owned()),
             custom: Some(custom.to_owned()),
+            custom_key: None,
             tokens: BTreeMap::new(),
             caret: None,
             canvas: None,
@@ -2162,6 +2179,7 @@ mod tests {
             text: None,
             image: None,
             custom: Some("x".into()),
+            custom_key: None,
             tokens: BTreeMap::new(),
             caret: None,
             canvas: None,
@@ -2183,6 +2201,7 @@ mod tests {
             text: None,
             image: None,
             custom: None,
+            custom_key: None,
             tokens,
             caret: None,
             canvas: None,

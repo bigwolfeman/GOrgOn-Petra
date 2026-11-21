@@ -435,7 +435,7 @@ impl ContentMeasure for MonoContent {
         self.image_size
     }
 
-    fn custom(&mut self, _name: &str, proposal: SizeProposal) -> Size {
+    fn custom(&mut self, _name: &str, _key: Option<&str>, proposal: SizeProposal) -> Size {
         self.calls += 1;
         let _ = proposal;
         self.custom_size
