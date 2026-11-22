@@ -392,6 +392,17 @@ impl ContentMeasure for MonoContent {
         }
     }
 
+    /// The longest whitespace-free stretch, in characters, times the
+    /// advance. Weight is ignored, as it is in `text`.
+    fn min_content_width(&mut self, req: &TextRequest<'_>) -> f32 {
+        req.text
+            .split(char::is_whitespace)
+            .map(|word| word.chars().count())
+            .max()
+            .unwrap_or(0) as f32
+            * self.char_w
+    }
+
     /// The same arithmetic [`Self::text`] wraps by: `per_line` characters
     /// a line, broken anywhere, cut at the line cap; one line for `Clip` and
     /// `Ellipsis`. Weight is ignored, as it is in `text`.

@@ -990,6 +990,30 @@ fn wrapping(req: &TextRequest<'_>) -> (usize, bool, Option<char>) {
     }
 }
 
+/// The widest whitespace-free stretch of glyphs on any row of `galley`,
+/// from the first glyph's left edge to the last one's advance.
+fn widest_word(galley: &Galley) -> f32 {
+    let mut widest = 0.0f32;
+    for row in &galley.rows {
+        let mut start: Option<f32> = None;
+        let mut end = 0.0f32;
+        for glyph in &row.row.glyphs {
+            if glyph.chr.is_whitespace() {
+                if let Some(from) = start.take() {
+                    widest = widest.max(end - from);
+                }
+                continue;
+            }
+            start.get_or_insert(glyph.pos.x);
+            end = glyph.pos.x + glyph.advance_width;
+        }
+        if let Some(from) = start {
+            widest = widest.max(end - from);
+        }
+    }
+    widest
+}
+
 /// How far `galley`'s glyph meshes reach past its box, above and below.
 ///
 /// `mesh_bounds` is the tight box around every glyph quad epaint will draw;
@@ -1016,6 +1040,16 @@ impl ContentMeasure for GalleyShaper {
             lines: galley.rows.len(),
             ink: ink_overflow(&galley),
         }
+    }
+
+    /// Read off the open probe's galley, so each word is measured in the
+    /// face its runs set it in and with the shaping the paint will use.
+    fn min_content_width(&mut self, req: &TextRequest<'_>) -> f32 {
+        let open = TextRequest {
+            available_width: None,
+            ..*req
+        };
+        widest_word(&self.galley(&open))
     }
 
     fn fragments(&mut self, req: &TextRequest<'_>, range: std::ops::Range<usize>) -> Vec<Rect> {
@@ -1152,6 +1186,10 @@ impl<'a> HostedContent<'a> {
 impl ContentMeasure for HostedContent<'_> {
     fn text(&mut self, req: &TextRequest<'_>) -> TextMeasurement {
         self.shaper.text(req)
+    }
+
+    fn min_content_width(&mut self, req: &TextRequest<'_>) -> f32 {
+        self.shaper.min_content_width(req)
     }
 
     fn fragments(&mut self, req: &TextRequest<'_>, range: std::ops::Range<usize>) -> Vec<Rect> {

@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use cat::Scene;
 use egui::{Context, RawInput};
-use gorgon_petra::draw::Command;
+use gorgon_petra::draw::{Command, PathVerb};
 use gorgon_petra::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Rect as PetraRect, Scale, Size};
 use gorgon_petra::input::{InputEvent, Route};
@@ -354,7 +354,8 @@ fn the_cat_draws_every_command_through_the_interpreter() {
     // One shape per fill and one per stroke, counted from the list rather than
     // hard-coded: a hard-coded number would drift the moment the cat gains a
     // whisker, and a count taken from the report alone would agree with an
-    // interpreter that drew nothing and reported zero.
+    // interpreter that drew nothing and reported zero. A path draws each
+    // sub-path on its own: every `MoveTo` starts one.
     let expected: usize = list
         .commands()
         .iter()
@@ -362,8 +363,19 @@ fn the_cat_draws_every_command_through_the_interpreter() {
             Command::Rect { paint, .. } | Command::Ellipse { paint, .. } => {
                 usize::from(paint.fill.is_some()) + usize::from(paint.stroke.is_some())
             }
-            Command::Path { paint, closed, .. } => {
-                usize::from(paint.fill.is_some() && *closed) + usize::from(paint.stroke.is_some())
+            Command::Path {
+                verbs,
+                paint,
+                closed,
+            } => {
+                let sub_paths = verbs
+                    .iter()
+                    .filter(|verb| matches!(verb, PathVerb::MoveTo(_)))
+                    .count()
+                    .max(1);
+                sub_paths
+                    * (usize::from(paint.fill.is_some() && *closed)
+                        + usize::from(paint.stroke.is_some()))
             }
             Command::Push { .. } | Command::Pop | Command::Sprite { .. } => 0,
         })

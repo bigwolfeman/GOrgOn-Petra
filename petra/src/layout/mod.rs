@@ -160,6 +160,16 @@ pub struct InkOverflow {
 pub trait ContentMeasure {
     /// Shape a text run.
     fn text(&mut self, req: &TextRequest<'_>) -> TextMeasurement;
+    /// The width of the widest word in `req`'s run: the narrowest line it
+    /// can wrap to without breaking inside a word (CSS's min-content). A
+    /// word is a stretch with no whitespace in it, set in its run's own
+    /// face. Zero for an empty run.
+    ///
+    /// A wrapping text answers this to a [`Proposal::Zero`] probe, so a
+    /// parent concedes its other children's slack before it narrows a column
+    /// past a whole word. A run placed narrower than this still breaks inside
+    /// the word, because then the word alone does not fit the line.
+    fn min_content_width(&mut self, req: &TextRequest<'_>) -> f32;
     /// The rectangles the bytes `range` of `req`'s shaped run cover, one per
     /// line they cross, relative to the run's top-left, in line order.
     ///

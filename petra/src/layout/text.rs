@@ -18,11 +18,11 @@
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Rect, Size};
-use crate::layout::{LayoutCtx, SizeProposal, Slot, TextRequest, TextRuns, semantics_of};
+use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, TextRequest, TextRuns, semantics_of};
 use crate::token::FocusRing;
 use crate::tree::{
     Behaviour, FocusFigure, Intent, Interaction, KeyPath, NodeKind, Phase, Role, TextProps,
-    ViewNode,
+    TextWrap, ViewNode,
 };
 
 /// Build the shaper request a text node's resolved props describe, offering
@@ -74,8 +74,28 @@ fn text_request<'a>(props: &TextProps<'a>, available_width: Option<f32>) -> Text
 /// genuinely cannot fit it now sees `wanted > main_extent`, runs the FR-005
 /// concession order, and flags `truncated` on itself — the path that was
 /// already written and was simply never reached.
+///
+/// # A wrapping run's smallest acceptable width is its widest word
+///
+/// [`Proposal::Zero`] asks for the smallest *acceptable* extent. Offered no
+/// width, a shaper breaks a wrapping run inside every word, one glyph a
+/// line, and the run used to answer that: a floor of one glyph. A stack
+/// reads the `Zero` answer as the extent below which a child loses content,
+/// so it handed a short word beside a long sibling a share narrower than the
+/// word and painted `acti` over `ve` (the shell's fiber rows) and `Creden`
+/// over `tials` (a settings column), while the sibling could have shrunk.
+/// A wrapping run now answers its widest word
+/// ([`ContentMeasure::min_content_width`]) and the height it takes at that
+/// width: CSS's min-content. An `Exact` offer is still shaped at the offer,
+/// so a word wider than the whole line breaks, because then the word alone
+/// does not fit. `Clip` and `Ellipsis` runs are built to shrink and keep
+/// their glyph-wide floor.
 pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal) -> Size {
     let props = node.props.text();
+    if props.wrap == TextWrap::Wrap && proposal.horizontal == Proposal::Zero {
+        let word = ctx.content.min_content_width(&text_request(&props, None));
+        return ctx.content.text(&text_request(&props, Some(word))).size;
+    }
     let req = text_request(&props, proposal.horizontal.available());
     ctx.content.text(&req).size
 }
@@ -331,6 +351,32 @@ mod tests {
         );
         // 32 / 8 = 4 chars/line, 8 chars needs ceil(8/4) = 2 lines.
         assert_eq!(size, Size::new(32.0, 32.0));
+    }
+
+    /// A zero probe of a wrapping run answers its widest word and the lines
+    /// it takes there; an exact offer, however narrow, is shaped at the
+    /// offer; a clipped run keeps its glyph-wide floor. Falsified by
+    /// deleting the `Proposal::Zero` arm in [`measure`]: the probe answers 0.
+    #[test]
+    fn a_zero_probe_of_a_wrapping_run_answers_its_widest_word() {
+        let mut h = Harness::new();
+        let node = text_node("is active now", TextWrap::Wrap, None);
+        let probe = |offer: Proposal| open(offer, Proposal::Unbounded);
+        // "active" is 6 chars at 8 units: 48. Mono breaks by count, so 13
+        // chars at 6 a line is 3 lines.
+        assert_eq!(
+            measure(&node, &mut h.ctx(), probe(Proposal::Zero)),
+            Size::new(48.0, 48.0)
+        );
+        assert_eq!(
+            measure(&node, &mut h.ctx(), probe(Proposal::Exact(32.0))).w,
+            32.0
+        );
+        let clipped = text_node("is active now", TextWrap::Clip, None);
+        assert_eq!(
+            measure(&clipped, &mut h.ctx(), probe(Proposal::Zero)).w,
+            0.0
+        );
     }
 
     #[test]
