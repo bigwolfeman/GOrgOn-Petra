@@ -498,10 +498,16 @@ impl GalleyShaper {
     /// string ever shaped — a long list of distinct row labels would grow it
     /// without limit, which is the same thing SC-008 forbids of the
     /// measurement cache. The bound is lower than the measurement cache's
-    /// because a galley carries its glyph rows and is the heavier object; it
-    /// is still well above the number of distinct runs one screen holds.
-    /// Raise it with [`GalleyShaper::set_capacity`] and watch
-    /// [`GalleyShaper::evictions`] to find out whether you need to.
+    /// because a galley carries its glyph rows and is the heavier object.
+    ///
+    /// It is **not** a bound on one screen. A key is a (text, wrap width)
+    /// pair and layout asks for one text at several widths, so a dense screen
+    /// asks for far more keys than it has strings: the GOrgOn shell asked for
+    /// 2 072 keys over 336 strings in one frame. Under a plain cap that
+    /// thrashed (see [`gorgon_petra::cache`]); a host that calls
+    /// [`GalleyShaper::begin_pass`] per frame, as [`crate::host::Host`]
+    /// does, never evicts a galley its current or previous frame used, and
+    /// this number bounds only the galleys kept beyond that for reuse.
     pub const DEFAULT_CAPACITY: usize = 2048;
 
     /// A shaper over `ctx` with the default typography.
@@ -535,9 +541,29 @@ impl GalleyShaper {
         self.galleys.set_capacity(capacity);
     }
 
-    /// Galleys dropped to stay inside the bound since construction. A number
-    /// that climbs every frame means one screen holds more distinct runs than
-    /// the bound, and the shaper is re-shaping text it just had.
+    /// Mark the start of a frame: galleys this frame or the last one used are
+    /// never evicted, whatever the bound ([`gorgon_petra::cache::LruCache::begin_pass`]).
+    pub fn begin_pass(&mut self) {
+        self.galleys.begin_pass();
+    }
+
+    /// Galleys held now.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.galleys.len()
+    }
+
+    /// Whether no galley is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.galleys.is_empty()
+    }
+
+    /// Galleys dropped to stay inside the bound since construction. Under
+    /// [`GalleyShaper::begin_pass`] only galleys no recent frame used are
+    /// dropped. Without it, a number that climbs every frame means one screen
+    /// holds more distinct runs than the bound, and the shaper is re-shaping
+    /// text it just had.
     #[must_use]
     pub fn evictions(&self) -> u64 {
         self.galleys.evictions()

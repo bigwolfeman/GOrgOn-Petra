@@ -1971,6 +1971,14 @@ impl<A: App> Host<A> {
         // by the time that call runs.
         let focus_before = self.focus.current().map(str::to_owned);
         let extents_before = self.extents.revision();
+        // One pass mark per petrified frame, not per egui pass: a caret
+        // flight that returned above paints the last picture and asks for no
+        // measurement, so counting it would age this frame's working set out
+        // of the live set while the window blinks. Here, and not inside
+        // `petrify_frame`, because the focus reconciliation below petrifies
+        // the same frame again.
+        self.cache.begin_pass();
+        self.shaper.begin_pass();
         let mut frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
 
         // `state.focused` was set from the *last* pass's reconciliation,
@@ -5052,7 +5060,7 @@ mod tests {
     use gorgon_petra::frame::PetrifiedFrame;
     use gorgon_petra::geom::{Point, Rect, Scale, Size};
     use gorgon_petra::input::{InputEvent, Route, route_pointer_exit};
-    use gorgon_petra::layout::{MeasureKey, RowSource, SizeProposal};
+    use gorgon_petra::layout::{MeasureCache, MeasureKey, RowSource, SizeProposal};
     use gorgon_petra::token::TokenName;
     use gorgon_petra::tree::{
         Anchor, ClampRule, InputPolicy, Intent, Interaction, Layer, NodeKind, Phase, PropKey,
@@ -5114,6 +5122,70 @@ mod tests {
         fn focus_request(&mut self) -> Option<gorgon_petra::frame::FocusTarget> {
             self.focus.take()
         }
+    }
+
+    /// A screen of distinct text rows, re-measured every frame.
+    struct Labels(usize);
+
+    impl RowSource for Labels {
+        fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            Vec::new()
+        }
+    }
+
+    impl App for Labels {
+        fn view(&mut self) -> ViewNode {
+            (0..self.0).fold(ViewNode::new(NodeKind::Stack, "labels"), |stack, i| {
+                stack.child(
+                    ViewNode::new(NodeKind::Text, format!("label-{i}")).with_props(Props {
+                        text: Some(format!("label number {i}")),
+                        ..Props::default()
+                    }),
+                )
+            })
+        }
+
+        fn handle(&mut self, _: &InputEvent, _: &Route, _: Option<&PetrifiedFrame>) {}
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+    }
+
+    /// A screen that asks the shaper for more galleys than its bound must
+    /// still shape each galley once, not once per frame.
+    ///
+    /// The GOrgOn shell hit this on 2026-11-22: 2 072 galley keys per frame
+    /// against the 2 048 bound, and the frame that crossed it re-shaped 1 578
+    /// galleys and took 3.5 times as long as the frame before. A plain LRU cap
+    /// evicts each key just before the next frame asks for it again.
+    #[test]
+    fn a_screen_over_the_galley_bound_is_shaped_once_not_every_frame() {
+        let (ctx, mut host) = boot(Labels(64));
+        host.set_cache_capacities(MeasureCache::DEFAULT_CAPACITY, 16);
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, RawInput::default());
+        let (shaped, reused) = host.shaper().stats();
+        let evicted = host.shaper().evictions();
+        step(&ctx, &mut host, RawInput::default());
+        let (shaped_after, reused_after) = host.shaper().stats();
+        assert!(
+            reused_after - reused >= 64,
+            "the frame must have asked for every label: {} lookups",
+            reused_after - reused
+        );
+        assert_eq!(
+            shaped_after - shaped,
+            0,
+            "a steady screen re-shaped {} galleys under a bound of 16",
+            shaped_after - shaped
+        );
+        assert_eq!(
+            host.shaper().evictions(),
+            evicted,
+            "a live galley was evicted"
+        );
+        assert!(host.shaper().len() >= 64, "the live set is held whole");
     }
 
     /// A 1000-row scroll whose rows alternate 8 and 56 tall under a 20-unit

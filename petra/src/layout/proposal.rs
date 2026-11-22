@@ -214,7 +214,9 @@ impl ChangeSet {
 /// 100 000-row virtualized collection would otherwise leave one entry per row
 /// ever scrolled past, which is the growth SC-008 forbids. Eviction is
 /// least-recently-used ([`LruCache`]), which keeps both the multi-probe
-/// entries of the frame in flight and the previous frame's window.
+/// entries of the frame in flight and the previous frame's window. A host
+/// that calls [`MeasureCache::begin_pass`] per frame also never loses a
+/// measurement the current or the previous frame took, however dense the tree.
 #[derive(Debug)]
 pub struct MeasureCache {
     entries: LruCache<MeasureKey, Size>,
@@ -281,6 +283,13 @@ impl MeasureCache {
     /// Change the entry bound, evicting immediately if it shrank.
     pub fn set_capacity(&mut self, capacity: usize) {
         self.entries.set_capacity(capacity);
+    }
+
+    /// Mark the start of a frame. Measurements taken this frame or the last
+    /// are never evicted, so a tree whose working set is over the bound still
+    /// hits on every repeat instead of thrashing ([`LruCache::begin_pass`]).
+    pub fn begin_pass(&mut self) {
+        self.entries.begin_pass();
     }
 
     /// Entries dropped to stay inside the bound since construction. A number
