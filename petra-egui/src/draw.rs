@@ -333,39 +333,49 @@ fn draw_one(
             closed,
             paint,
         } => {
-            let points = flatten(verbs, transform);
-            if points.len() < 2 {
+            // One polyline per sub-path: a `MoveTo` lifts the pen.
+            let paths: Vec<Vec<Pos2>> = flatten(verbs, transform)
+                .into_iter()
+                .filter(|points| points.len() >= 2)
+                .collect();
+            if paths.is_empty() {
                 report.silent += 1;
                 return;
             }
-            let mut drew = false;
-            // Fill first, so a stroke of the same path sits on top of it —
-            // the order every other shape in this crate draws in.
-            if *closed && let Some(fill) = ink.resolve(paint.fill.as_ref(), report) {
-                // `DrawList::new` already refused a non-convex filled path, so
-                // this is a convex polygon by construction rather than by
-                // hope. That refusal is the reason this line is allowed to
-                // exist at all: `epaint` states fill is supported for convex
-                // polygons only.
-                painter.add(Shape::convex_polygon(
-                    points.clone(),
-                    fill,
-                    EguiStroke::NONE,
-                ));
-                report.shapes += 1;
-                drew = true;
-            }
-            if let Some(stroke) = resolve_stroke(ink, paint.stroke.as_ref(), scale, report) {
-                painter.add(if *closed {
-                    Shape::closed_line(points, stroke)
-                } else {
-                    Shape::line(points, stroke)
-                });
-                report.shapes += 1;
-                drew = true;
-            }
-            if !drew {
+            let fill = if *closed {
+                ink.resolve(paint.fill.as_ref(), report)
+            } else {
+                None
+            };
+            let stroke = resolve_stroke(ink, paint.stroke.as_ref(), scale, report);
+            if fill.is_none() && stroke.is_none() {
                 report.silent += 1;
+                return;
+            }
+            for points in paths {
+                // Fill first, so a stroke of the same path sits on top of it,
+                // the order every other shape in this crate draws in.
+                if let Some(fill) = fill {
+                    // `DrawList::new` already refused a non-convex filled
+                    // path, so this is a convex polygon by construction rather
+                    // than by hope. That refusal is the reason this line is
+                    // allowed to exist at all: `epaint` states fill is
+                    // supported for convex polygons only.
+                    painter.add(Shape::convex_polygon(
+                        points.clone(),
+                        fill,
+                        EguiStroke::NONE,
+                    ));
+                    report.shapes += 1;
+                }
+                if let Some(stroke) = stroke {
+                    painter.add(if *closed {
+                        Shape::closed_line(points, stroke)
+                    } else {
+                        Shape::line(points, stroke)
+                    });
+                    report.shapes += 1;
+                }
             }
         }
         Command::Sprite {
@@ -506,8 +516,10 @@ fn snap_edges(rect: PetraRect, scale: Scale) -> PetraRect {
     PetraRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
 }
 
-/// Every point of `verbs` under `transform`, béziers cut into exactly
-/// [`curve_segments`] equal parameter steps.
+/// The sub-paths of `verbs` under `transform`, one polyline each, béziers
+/// cut into exactly [`curve_segments`] equal parameter steps. A `MoveTo`
+/// starts a new sub-path, as `PathVerb::MoveTo` documents, so no segment
+/// joins one sub-path's last point to the next one's first.
 ///
 /// Flattened here rather than by `epaint`'s adaptive flattener because the
 /// draw list's segment bound (`MAX_DRAW_PATH_SEGMENTS`) is only the cost when
@@ -518,25 +530,39 @@ fn snap_edges(rect: PetraRect, scale: Scale) -> PetraRect {
 /// logical units, is a tenth of a device pixel at scale 2. The tessellator
 /// strokes and fills the polyline as given, so a fill and the stroke over it
 /// share one silhouette. Control points are transformed and never rounded.
-fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Pos2> {
+fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Vec<Pos2>> {
     let at = |p: Point| {
         let moved = transform.apply(p);
         Pos2::new(moved.x, moved.y)
     };
     let scale = [transform.sx.abs(), transform.sy.abs()];
+    let mut paths: Vec<Vec<Pos2>> = Vec::new();
     let mut out: Vec<Pos2> = Vec::with_capacity(verbs.len());
     let mut last: Option<Point> = None;
     for verb in verbs {
         let from = last.or(verb.first()).unwrap_or(Point::new(0.0, 0.0));
         match *verb {
-            PathVerb::MoveTo(p) | PathVerb::LineTo(p) => out.push(at(p)),
+            // `MoveTo` starts a new sub-path (`PathVerb::MoveTo`): the pen
+            // lifts, so no segment joins the last point to this one.
+            PathVerb::MoveTo(p) => {
+                if !out.is_empty() {
+                    paths.push(std::mem::take(&mut out));
+                }
+                out.push(at(p));
+            }
+            PathVerb::LineTo(p) => {
+                // A path that opens with a line draws it from the line's
+                // own end, as the interpreter has always done.
+                out.push(at(p));
+            }
             PathVerb::QuadTo { ctrl, to } => {
                 let n = curve_segments(verb, from, scale);
                 let [p0, p1, p2] = [at(from), at(ctrl), at(to)];
-                // Step 0 is the start point, already in `out` (or, for a
-                // curve that opens a path, its first control point, which is
-                // where the interpreter has always drawn such a curve from).
-                if last.is_none() {
+                // Step 0 is the start point, already in the sub-path (or,
+                // for a curve that opens one, its first control point, which
+                // is where the interpreter has always drawn such a curve
+                // from).
+                if out.is_empty() {
                     out.push(p0);
                 }
                 out.extend((1..=n).map(|i| {
@@ -552,7 +578,7 @@ fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Pos2> {
             PathVerb::CubicTo { c1, c2, to } => {
                 let n = curve_segments(verb, from, scale);
                 let [p0, p1, p2, p3] = [at(from), at(c1), at(c2), at(to)];
-                if last.is_none() {
+                if out.is_empty() {
                     out.push(p0);
                 }
                 out.extend((1..=n).map(|i| {
@@ -565,16 +591,19 @@ fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Pos2> {
                     )
                 }));
             }
-            // The `closed` flag on the command is what closes the shape;
-            // repeating the first point here would put a zero-length segment
-            // in every closed path.
+            // The `closed` flag on the command is what closes each
+            // sub-path; repeating the first point here would put a
+            // zero-length segment in every closed path.
             PathVerb::Close => {}
         }
         if let Some(end) = verb.end() {
             last = Some(end);
         }
     }
-    out
+    if !out.is_empty() {
+        paths.push(out);
+    }
+    paths
 }
 
 /// A canvas-local rect in frame logical units, as an `egui` rect.
@@ -1237,6 +1266,34 @@ mod tests {
     /// pushed zoom. The curve's two ends share an x, which is where
     /// `epaint`'s default flattener, used before, had a tolerance of zero.
     #[test]
+    fn a_move_to_starts_a_new_sub_path() {
+        // Two strokes, a to b and c to d. Before sub-paths, flatten returned
+        // one polyline a, b, c, d, and the stroke drew a segment from b to c.
+        let (a, b, c, d) = (
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(0.0, 10.0),
+            Point::new(10.0, 10.0),
+        );
+        let verbs = [
+            PathVerb::MoveTo(a),
+            PathVerb::LineTo(b),
+            PathVerb::MoveTo(c),
+            PathVerb::LineTo(d),
+        ];
+        let paths = flatten(&verbs, Affine::IDENTITY);
+        let p = |q: Point| egui::Pos2::new(q.x, q.y);
+        assert_eq!(paths, vec![vec![p(a), p(b)], vec![p(c), p(d)]]);
+        assert!(
+            !paths
+                .iter()
+                .flat_map(|path| path.windows(2))
+                .any(|pair| pair[0] == p(b) && pair[1] == p(c)),
+            "a segment joins b to c"
+        );
+    }
+
+    #[test]
     fn a_bezier_flattens_into_the_counted_segments_within_tolerance() {
         // A quarter arc from 45 to 135 degrees about (16, 16), radius 10.
         let (r, k) = (10.0_f32, 0.552_284_8_f32);
@@ -1258,7 +1315,9 @@ mod tests {
                 sx: zoom,
                 sy: zoom,
             };
-            let points = flatten(&verbs, transform);
+            let paths = flatten(&verbs, transform);
+            assert_eq!(paths.len(), 1, "{zoom}x: one sub-path");
+            let points = &paths[0];
             let n = curve_segments(&cubic, from, [zoom, zoom]);
             assert_eq!(points.len(), n + 1, "{zoom}x: one point per segment end");
             let centre = egui::Pos2::new(16.0 * zoom, 16.0 * zoom);

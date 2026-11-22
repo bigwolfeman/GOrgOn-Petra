@@ -170,11 +170,113 @@ pub(crate) fn ink_of(class: &str) -> Option<Ink> {
     })
 }
 
-/// Declare every `syntax.*` name, at kind colour.
+/// Declare every `syntax.*` name and the two diff bands, at kind colour.
 pub(crate) fn declare(vocab: &mut Vocabulary) {
     for class in SYNTAX_CLASSES {
         let name = syntax_token(class).expect("every listed class has a token");
         vocab.declare(DesignToken::new(name, TokenKind::Color));
+    }
+    for (band, _, _) in DIFF_BANDS {
+        vocab.declare(DesignToken::new(
+            TokenName::new(band).expect("a band is a name"),
+            TokenKind::Color,
+        ));
+    }
+}
+
+/// The row bands of a diff view: `(band token, the class whose ink tints
+/// it, its step off the reference layer in CIE L*)`.
+///
+/// `syntax.diff.plus` and `syntax.diff.minus` are inks, tuned to be read as
+/// text. A diff row also wants a band behind the whole line, and an ink is
+/// the wrong colour for that: every other ink has to stay legible on it.
+/// So a band is a near-ground tone tinted at up to [`BAND_CHROMA`] with its
+/// ink's hue. The steps are the lightness channel: the removed band stands
+/// twice as far off the reference as the added one, so the pair differs by
+/// lightness after any colour-blind simulation. The `+` and `-` glyphs stay
+/// the channel that carries the meaning; a band is an extra cue
+/// (`specs/017-version-control/contracts/projections.md`, "Diff lines").
+///
+/// The reference is the polarity's outermost layer: the lightest one in a
+/// light theme, stepped darker, and the darkest one in a dark theme, stepped
+/// lighter. Both light themes carry white among their layers and every ink
+/// was tuned to clear `#f2f2f2`, so a band inside that span walks no ink;
+/// both dark themes keep their bands under layer two, the darkest code
+/// ground their inks clear. The steps are as large as that span allows.
+/// The bands still join [`GROUNDS`], so a later retune that moved them past
+/// it would walk the inks rather than leave one illegible.
+pub const DIFF_BANDS: [(&str, &str, f32); 2] = [
+    ("diff.plus", "diff.plus", PLUS_BAND_STEP),
+    ("diff.minus", "diff.minus", MINUS_BAND_STEP),
+];
+
+/// How far the added band stands off the reference layer, in CIE L*.
+const PLUS_BAND_STEP: f32 = 2.5;
+
+/// How far the removed band stands off the reference layer, in CIE L*:
+/// twice [`PLUS_BAND_STEP`].
+const MINUS_BAND_STEP: f32 = 5.0;
+
+/// The most chroma, in CIE C*ab, a band carries in its ink's hue. A tint, not
+/// a colour: it adds hue for a reader who sees it and costs nothing a reader
+/// who does not would need. Near white the sRGB gamut is narrow, so a band
+/// takes less where this much would clip a channel and move its lightness.
+const BAND_CHROMA: f32 = 10.0;
+
+/// The layer a band steps off: the lightest of `layers` in a light theme,
+/// the darkest in a dark one.
+pub(crate) fn band_reference(layers: &[ColorValue], mode: ThemeMode) -> ColorValue {
+    let lightness = |c: &ColorValue| crate::token::measure::to_lab([c.r, c.g, c.b])[0];
+    let pick = layers.iter().copied().max_by(|a, b| {
+        let (la, lb) = (lightness(a), lightness(b));
+        match mode {
+            ThemeMode::Light => la.total_cmp(&lb),
+            ThemeMode::Dark => lb.total_cmp(&la),
+        }
+    });
+    pick.expect("a theme has layers")
+}
+
+/// Assign the two [`DIFF_BANDS`], stepped off `reference`
+/// ([`band_reference`]).
+pub(crate) fn insert_bands(
+    values: &mut BTreeMap<TokenName, TokenValue>,
+    mode: ThemeMode,
+    reference: ColorValue,
+) {
+    let base = crate::token::measure::to_lab([reference.r, reference.g, reference.b]);
+    let direction = match mode {
+        ThemeMode::Light => -1.0,
+        ThemeMode::Dark => 1.0,
+    };
+    for (band, class, step) in DIFF_BANDS {
+        let [r, g, b] = ink_of(class)
+            .unwrap_or_else(|| panic!("band {band:?} names class {class:?}, which has no ink"))
+            .rgb(mode);
+        let ink = ColorValue::from_srgb8(r, g, b, 0xff);
+        let [_, a, bb] = crate::token::measure::to_lab([ink.r, ink.g, ink.b]);
+        let chroma = a.hypot(bb).max(f32::EPSILON);
+        let target = base[0] + direction * step;
+        // The most chroma, in whole steps, that lands on the target
+        // lightness: `from_lab` clamps a channel out of gamut, and a clamped
+        // channel moves the lightness the band was stepped to.
+        let rgb = (0..=BAND_CHROMA as u8)
+            .rev()
+            .map(|c| {
+                let scale = f32::from(c) / chroma;
+                crate::token::measure::from_lab([target, a * scale, bb * scale])
+            })
+            .find(|rgb| (crate::token::measure::to_lab(*rgb)[0] - target).abs() < 0.01)
+            .unwrap_or_else(|| panic!("band {band:?} cannot reach L* {target}"));
+        values.insert(
+            TokenName::new(band).expect("a band is a name"),
+            TokenValue::Color(ColorValue {
+                r: rgb[0],
+                g: rgb[1],
+                b: rgb[2],
+                a: 1.0,
+            }),
+        );
     }
 }
 
@@ -246,7 +348,15 @@ fn legible_on(ink: ColorValue, mode: ThemeMode, grounds: &[ColorValue]) -> Optio
         .find(|c| clears(*c))
 }
 
-pub(crate) const GROUNDS: [&str; 3] = ["surface.base", "surface.raised", "surface.layer-two"];
+/// The grounds a code well paints on: the three surfaces it sits on, and
+/// the two [`DIFF_BANDS`] a diff row sits on.
+pub(crate) const GROUNDS: [&str; 5] = [
+    "surface.base",
+    "surface.raised",
+    "surface.layer-two",
+    "diff.plus",
+    "diff.minus",
+];
 
 /// The floor, in CIE delta E, between two adjacent classes after a
 /// red-green simulation. The status floor is 30
@@ -497,6 +607,59 @@ mod tests {
                     apart >= MIN_DIFF_SEPARATION,
                     "{mode}: plus vs minus under {model} is {apart:.1} delta E, \
                      under {MIN_DIFF_SEPARATION}"
+                );
+            }
+        }
+    }
+
+    /// Each diff band stands its own step off its theme's reference layer
+    /// ([`band_reference`]), in the polarity's direction, and the removed
+    /// band stands further off than the added one under every simulation
+    /// model, so the pair keeps its lightness order for a red-green reader.
+    /// Plain text reads on both.
+    ///
+    /// Falsified by swapping the two steps in [`DIFF_BANDS`]: the order
+    /// assertion names the theme.
+    #[test]
+    fn the_diff_bands_step_off_the_ground_by_lightness() {
+        /// The band is stored as linear floats and reached by a Lab round
+        /// trip; it lands within a hundredth of its target.
+        const ROUNDING: f32 = 0.02;
+        for (mode, theme) in themes() {
+            let layers: Vec<ColorValue> = crate::token::shipped::LAYER_TOKENS
+                .iter()
+                .map(|t| theme_color(&theme, t))
+                .collect();
+            let reference = band_reference(&layers, theme.mode());
+            let base = lightness(reference);
+            let direction = match theme.mode() {
+                ThemeMode::Light => -1.0,
+                ThemeMode::Dark => 1.0,
+            };
+            for (band, _, step) in DIFF_BANDS {
+                let off = (lightness(theme_color(&theme, band)) - base) * direction;
+                assert!(
+                    (off - step).abs() < ROUNDING,
+                    "{mode}: {band} stands {off:.2} L* off its reference layer, not {step}"
+                );
+                let text = theme_color(&theme, "text.primary");
+                let ratio = contrast(text, theme_color(&theme, band));
+                assert!(
+                    ratio >= MIN_INK_CONTRAST,
+                    "{mode}: text.primary on {band} is {ratio:.2}:1"
+                );
+            }
+            let (plus, minus) = (
+                theme_color(&theme, "diff.plus"),
+                theme_color(&theme, "diff.minus"),
+            );
+            for (model, matrix) in SIMULATION_MODELS {
+                let seen = |c: ColorValue| to_lab(crate::token::measure::simulate(c, matrix))[0];
+                let g = seen(reference);
+                assert!(
+                    (seen(minus) - g).abs() > (seen(plus) - g).abs(),
+                    "{mode}: under {model} the removed band does not stand further \
+                     off the reference than the added one"
                 );
             }
         }

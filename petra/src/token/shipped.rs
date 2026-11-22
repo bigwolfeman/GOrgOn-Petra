@@ -715,13 +715,39 @@ const GRAY90_LAYERS: [[u8; 3]; 4] = [
 /// `degraded` and `down` stay in the darker half on light grounds so the
 /// three remain separable in L\* after hue collapse.
 ///
+/// `status.unknown` is a neutral grey, as Carbon's status palette paints
+/// "unknown": the one status with no hue, so it can never be mistaken for a
+/// state that has one. Its channel is the diamond and the word. The greys are
+/// the ones that keep every pair above the floor in all four simulation
+/// models and clear 4:1 on each polarity's status-bearing layers (light
+/// `#767676`: ΔE\*ab 36.2 to `down` at worst, 4.06:1 on `#f2f2f2`; dark
+/// `#909090`: ΔE\*ab 37.7 to `ok` at worst, 4.13:1 on Gray 90's `#303030`).
+///
 /// One set per polarity, never per theme: the statuses are GOrgOn's own and
 /// stay byte-identical (FR-005, FR-050), so Gray 10 wears White's and Gray 90
 /// wears Gray 100's. The four-theme sweep is what proves that holds on the
 /// two new grounds.
-const LIGHT_STATUS: [[u8; 3]; 3] = [[0x9a, 0xff, 0xb0], [0xb5, 0x54, 0x1a], [0x49, 0x12, 0x15]];
+const LIGHT_STATUS: [[u8; 3]; 4] = [
+    [0x9a, 0xff, 0xb0],
+    [0xb5, 0x54, 0x1a],
+    [0x49, 0x12, 0x15],
+    [0x76, 0x76, 0x76],
+];
 /// See [`LIGHT_STATUS`].
-const DARK_STATUS: [[u8; 3]; 3] = [[0xe0, 0xff, 0xe6], [0xff, 0xc4, 0x7a], [0xf2, 0x1c, 0x0d]];
+const DARK_STATUS: [[u8; 3]; 4] = [
+    [0xe0, 0xff, 0xe6],
+    [0xff, 0xc4, 0x7a],
+    [0xf2, 0x1c, 0x0d],
+    [0x90, 0x90, 0x90],
+];
+
+/// The shipped status names, in [`LIGHT_STATUS`]'s order.
+const STATUS_NAMES: [&str; 4] = [
+    "status.ok",
+    "status.degraded",
+    "status.down",
+    "status.unknown",
+];
 
 /// Everything that differs between the four shipped themes, gathered in
 /// one record so [`build`] spells a theme once.
@@ -760,8 +786,8 @@ struct Palette {
     scrim_alpha: u8,
     /// `button-disabled`, with its alpha.
     button_disabled: ([u8; 3], u8),
-    /// `status.ok`, `status.degraded`, `status.down`.
-    status: &'static [[u8; 3]; 3],
+    /// `status.ok`, `status.degraded`, `status.down`, `status.unknown`.
+    status: &'static [[u8; 3]; 4],
     /// `button-danger-primary`.
     danger: [u8; 3],
 }
@@ -2698,6 +2724,13 @@ pub fn standard_vocabulary() -> Vocabulary {
         .declare_status(
             StatusToken::new(name("status.down"), StatusShape::Octagon, "Down")
                 .expect("non-empty literal text"),
+        )
+        // Carbon's "unknown" status is a grey diamond. It is the one state
+        // that says the shell does not know, or the source has no record
+        // (an untracked file, a folder whose contents are unread).
+        .declare_status(
+            StatusToken::new(name("status.unknown"), StatusShape::Diamond, "Unknown")
+                .expect("non-empty literal text"),
         );
 
     vocab
@@ -2726,6 +2759,12 @@ fn build(palette: &Palette) -> Theme {
     values.insert(name("text.primary"), opaque(palette.text[0]));
     values.insert(name("text.muted"), opaque(palette.text[1]));
     values.insert(name("text.faint"), opaque(palette.faint));
+    let layers: Vec<ColorValue> = palette.layers.iter().copied().map(opaque_value).collect();
+    crate::token::syntax::insert_bands(
+        &mut values,
+        mode,
+        crate::token::syntax::band_reference(&layers, mode),
+    );
     let code_grounds: Vec<ColorValue> = crate::token::syntax::GROUNDS
         .iter()
         .map(|ground| match values.get(&name(ground)) {
@@ -2793,10 +2832,7 @@ fn build(palette: &Palette) -> Theme {
     values.insert(name(HALO_TOKEN), opaque(palette.ring[1]));
 
     // Status colours: see `LIGHT_STATUS` for why these are measured values.
-    for (token, rgb) in ["status.ok", "status.degraded", "status.down"]
-        .into_iter()
-        .zip(palette.status)
-    {
+    for (token, rgb) in STATUS_NAMES.into_iter().zip(palette.status) {
         values.insert(name(token), opaque(*rgb));
     }
     // After the statuses, and reading them back out: see
@@ -3338,7 +3374,7 @@ mod tests {
     ///
     /// A status colour was tuned against one surface, and the layer set has
     /// four. This pins the boundary in **both** directions: every layer up to
-    /// and including the index below carries all three status colours at
+    /// and including the index below carries all four status colours at
     /// [`MIN_STATUS_SEPARATION`]'s sibling floor, and the first layer past it
     /// carries at least one that does not.
     ///
@@ -3362,7 +3398,7 @@ mod tests {
 
     #[test]
     fn a_status_marker_is_legible_only_down_to_its_theme_s_deepest_layer() {
-        const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
+        const STATUSES: [&str; 4] = super::STATUS_NAMES;
         for (label, deepest) in DEEPEST_STATUS_LAYER {
             let theme = theme_named(label);
             let colors: Vec<ColorValue> = STATUSES.iter().map(|s| theme_color(&theme, s)).collect();
@@ -4032,10 +4068,15 @@ mod tests {
     fn every_shipped_status_token_carries_a_shape_and_non_empty_text() {
         let vocab = standard_vocabulary();
         let statuses: Vec<_> = vocab.statuses().collect();
+        let mut expected = super::STATUS_NAMES.to_vec();
+        expected.sort_unstable();
         assert_eq!(
-            statuses.len(),
-            3,
-            "expected status.ok, status.degraded, status.down"
+            statuses
+                .iter()
+                .map(|status| status.name().as_str())
+                .collect::<Vec<_>>(),
+            expected,
+            "expected status.ok, status.degraded, status.down, status.unknown"
         );
         for status in statuses {
             assert!(
@@ -4350,7 +4391,7 @@ mod tests {
     /// it.
     #[test]
     fn the_accent_survives_red_green_colour_blindness() {
-        const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
+        const STATUSES: [&str; 4] = super::STATUS_NAMES;
         for (label, theme) in themes() {
             for blue in [ACCENT_TOKEN, LINK_TOKEN] {
                 let hue = theme_color(&theme, blue);
@@ -6043,7 +6084,14 @@ mod tests {
                     || name == "focus-inverse"
                     || name.starts_with("status.")
                     || name.starts_with("support-")
-                    || name.starts_with("syntax.");
+                    || name.starts_with("syntax.")
+                    // The diff row bands, gated by
+                    // `syntax::tests::the_diff_bands_step_off_the_ground_by_lightness`:
+                    // a tint of the diff inks' hues whose meaning the `+`
+                    // and `-` glyphs carry.
+                    || crate::token::syntax::DIFF_BANDS
+                        .iter()
+                        .any(|(band, _, _)| *band == name);
                 if gated {
                     continue;
                 }

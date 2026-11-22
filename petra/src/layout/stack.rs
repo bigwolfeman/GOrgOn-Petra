@@ -674,13 +674,54 @@ fn settle_group(
         .sum();
     let mut remaining = (avail - held).max(0.0);
     let mut left = elastic.iter().filter(|&&e| !e).count();
+    // A share is never less than the child's floor when the group can pay
+    // every floor: a wrapping label's floor is its widest word, and an equal
+    // share under it breaks the word while a sibling that could shrink keeps
+    // the room (CSS flex items stop shrinking at min-content the same way).
+    // A group that cannot pay every floor still pays the minimums its
+    // children declared, which outrank a word's width: a word can break, a
+    // declared minimum is the author's. A group that cannot pay those either
+    // hands out plain equal shares, and concession at placement decides who
+    // gives.
+    let keep: Vec<f32> = {
+        let shared: Vec<usize> = group
+            .iter()
+            .zip(&elastic)
+            .filter(|&(_, &e)| !e)
+            .map(|(&i, _)| i)
+            .collect();
+        let declared = |i: usize| {
+            o.node.children[i]
+                .constraints
+                .axis(o.main)
+                .min
+                .unwrap_or(0.0)
+                .max(0.0)
+        };
+        let fits = |sum: f32| sum <= remaining + FIT_EPSILON;
+        if fits(shared.iter().map(|&i| floors[i]).sum()) {
+            group.iter().map(|&i| floors[i]).collect()
+        } else if fits(shared.iter().map(|&i| declared(i)).sum()) {
+            group.iter().map(|&i| declared(i)).collect()
+        } else {
+            vec![0.0; group.len()]
+        }
+    };
+    let mut keep_after: f32 = keep
+        .iter()
+        .zip(&elastic)
+        .filter(|&(_, &e)| !e)
+        .map(|(k, _)| k)
+        .sum();
     for (g, &i) in group.iter().enumerate() {
         let got = if elastic[g] {
             o.measure(i, floors[i])
         } else {
+            keep_after -= keep[g];
             let share = remaining / left as f32;
             left -= 1;
-            o.measure(i, share)
+            let offer = share.min((remaining - keep_after).max(0.0)).max(keep[g]);
+            o.measure(i, offer)
         };
         taken[i] = got;
         extents[g] = got.along(o.main);
@@ -2366,6 +2407,34 @@ mod tests {
         let out = placements(&tree, Rect::new(0.0, 0.0, 100.0, 60.0));
         assert_eq!(extent_of(&out, "wide", Axis::Horizontal), 60.0);
         assert_eq!(extent_of(&out, "bare0", Axis::Horizontal), 40.0);
+    }
+
+    /// A short word beside a long wrapping run keeps its width: the equal
+    /// share (45 of 90) is narrower than `active` (48), the sentence beside
+    /// it can wrap down to its widest word (`short`, 40), so the word takes
+    /// its 48 and the sentence the 42 left. Falsified by handing out plain
+    /// equal shares in `settle_group`: the word lands on 45 and breaks as
+    /// `acti` over `ve`.
+    #[test]
+    fn an_equal_share_never_breaks_a_word_a_wrapping_sibling_could_make_room_for() {
+        let words = |key: &str, text: &str| {
+            ViewNode::new(NodeKind::Text, Key::new(key)).with_props(Props {
+                text: Some(text.to_owned()),
+                ..Props::default()
+            })
+        };
+        let tree = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::Start,
+            vec![
+                words("word", "active"),
+                words("sentence", "a run of short words that wraps"),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 90.0, 200.0));
+        assert_eq!(extent_of(&out, "word", Axis::Horizontal), 48.0);
+        assert_eq!(extent_of(&out, "sentence", Axis::Horizontal), 42.0);
     }
 
     /// A child already at its declared maximum takes no part in the roll-back:

@@ -468,9 +468,13 @@ fn tab_variant_full(
     //   That was reported against this strip once, in the other direction —
     //   R6 wanted them further apart, not merged — and the shadow under the
     //   bar is what separates them now.
-    // * **Contained** — the indicator is on the *top* edge and the panel
-    //   below the strip is not a control, so the bottom edge is free.
-    //   `BarUnder`, unchanged.
+    // * **Contained** — the indicator is on the *top* edge, so the bottom
+    //   edge is free. But a contained strip heads its panel flush (Carbon
+    //   joins the selected tab to the panel by fill), so there is no run
+    //   below a tab: a `BarUnder` hung five units into the panel's first
+    //   row, over whatever the panel draws there (an editor's line-number
+    //   gutter, seen in the shell on 2026-11-22). `BarInside` keeps the
+    //   stripe on the tab's own bottom edge, clear of the top indicator.
     // * **Vertical** — the indicator is on the *left*, so `Sides` would
     //   collide the way a bar collides on Line. The tabs also stack, and the
     //   measured gap between `tab-vert-0` and `tab-vert-1` is smaller than
@@ -479,7 +483,7 @@ fn tab_variant_full(
     node.semantics.focus_figure = match variant {
         Variant::Line => FocusFigure::BarUnder,
         Variant::Vertical => FocusFigure::BarInside,
-        Variant::Contained => FocusFigure::BarUnder,
+        Variant::Contained => FocusFigure::BarInside,
     };
     node
 }
@@ -798,15 +802,16 @@ mod tests {
         }
 
         // Contained is the variant that does *not* need the ring. Its
-        // indicator is on the top edge, so the bottom edge — where a bar
-        // hangs — is free, and the operator's rule then applies: a bar unless
-        // a bar will not fit.
+        // indicator is on the top edge, so the bottom edge is free, and the
+        // operator's rule then applies: a bar unless a bar will not fit. The
+        // strip heads its panel flush, so the bar sits inside the tab's own
+        // bottom edge rather than hanging into the panel.
         let contained = contained_tab("t", "Fibers", true);
         assert_eq!(
             contained.semantics.focus_figure,
-            FocusFigure::BarUnder,
-            "a contained tab pins its indicator to the top edge, so nothing \
-             is competing for the bottom one"
+            FocusFigure::BarInside,
+            "a contained tab heads its panel flush, so a bar under it lands \
+             on the panel's first row"
         );
         let frame = petrify_lone(contained);
         let rect = |suffix: &str| -> Rect {
@@ -817,13 +822,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("contained: no placement ending in {suffix}"))
                 .rect
         };
-        let bar = ring.bar(rect("/root/t"));
+        let tab_rect = rect("/root/t");
+        let bar = ring.bar_inside(tab_rect);
         let mark = rect("/root/t/indicator");
         assert_eq!(
             bar.intersect(mark).w * bar.intersect(mark).h,
             0.0,
             "the bar {bar:?} touches the contained indicator {mark:?}, which \
              is the two-lines defect this variant was chosen to avoid"
+        );
+        assert!(
+            bar.y >= tab_rect.y && bar.y + bar.h <= tab_rect.y + tab_rect.h,
+            "the bar {bar:?} leaves the tab {tab_rect:?}, so it paints on the \
+             panel the strip heads"
         );
     }
 
