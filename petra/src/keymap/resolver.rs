@@ -194,6 +194,13 @@ impl Resolver {
     /// answer to "who could this chord be for right now" (FR-008a). A
     /// [`Resolution::NoMatch`] or [`Resolution::Matched`] clears any pending
     /// sequence; [`Resolution::Pending`] extends it.
+    ///
+    /// The order of `active_scopes` is precedence, first wins. When one
+    /// trigger has a binding in two reachable scopes (a subtree binding and
+    /// a global one on the same chord), the binding of the scope listed
+    /// first matches. A caller lists the innermost subtree first and
+    /// [`Scope::Global`] last, so the binding nearest to focus shadows a
+    /// wider one without either being refused.
     pub fn resolve(&mut self, chord: Chord, active_scopes: &[Scope]) -> Resolution {
         let mut candidate = std::mem::take(&mut self.pending);
         candidate.push(chord);
@@ -214,10 +221,9 @@ impl Resolver {
             return Resolution::NoMatch;
         }
 
-        if let Some(binding) = node
-            .bindings
+        if let Some(binding) = active_scopes
             .iter()
-            .find(|b| active_scopes.contains(&b.scope))
+            .find_map(|scope| node.bindings.iter().find(|b| &b.scope == scope))
         {
             return Resolution::Matched(binding.clone());
         }
@@ -543,6 +549,50 @@ mod tests {
         resolver
             .insert(subtree)
             .expect("same trigger, different scope, is not a conflict");
+    }
+
+    #[test]
+    fn the_scope_listed_first_wins_whichever_binding_was_inserted_first() {
+        let subtree = || Scope::Subtree {
+            root: "panel:1".to_owned(),
+        };
+        let inner = Binding::new(
+            vec![ctrl(KeyCode::Char('g'))],
+            CommandName::builtin("subtree-g"),
+            subtree(),
+            Owner::Operator,
+        )
+        .unwrap();
+        for inner_first in [false, true] {
+            let mut resolver = Resolver::new();
+            let outer = global_binding(vec![ctrl(KeyCode::Char('g'))], "global-g");
+            if inner_first {
+                resolver.insert(inner.clone()).unwrap();
+                resolver.insert(outer).unwrap();
+            } else {
+                resolver.insert(outer).unwrap();
+                resolver.insert(inner.clone()).unwrap();
+            }
+            let named = |resolution: Resolution| match resolution {
+                Resolution::Matched(binding) => binding.command.name,
+                other => panic!("no match: {other:?}"),
+            };
+            let both = [subtree(), Scope::Global];
+            assert_eq!(
+                named(resolver.resolve(ctrl(KeyCode::Char('g')), &both)),
+                "subtree-g",
+                "inserted inner first: {inner_first}"
+            );
+            let reversed = [Scope::Global, subtree()];
+            assert_eq!(
+                named(resolver.resolve(ctrl(KeyCode::Char('g')), &reversed)),
+                "global-g"
+            );
+            assert_eq!(
+                named(resolver.resolve(ctrl(KeyCode::Char('g')), &[Scope::Global])),
+                "global-g"
+            );
+        }
     }
 
     #[test]
