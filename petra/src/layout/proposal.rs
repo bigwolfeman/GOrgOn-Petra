@@ -175,6 +175,8 @@ pub struct MeasureKey {
     pub theme_rev: u64,
     /// Display scale.
     pub scale: Scale,
+    /// Text scale in force ([`crate::tree::Props::text_scale`]).
+    pub text_scale: Scale,
 }
 
 /// What changed behind the view tree since the last frame.
@@ -626,6 +628,7 @@ mod tests {
             proposal,
             theme_rev: 1,
             scale: Scale::ONE,
+            text_scale: Scale::ONE,
         }
     }
 

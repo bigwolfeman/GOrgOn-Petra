@@ -146,6 +146,26 @@ pub enum Action {
         /// with no platform-dependent line/page rescaling in between.
         delta: Size,
     },
+    /// The pointer moves to the target and the wheel turns `delta` logical
+    /// units with the zoom modifier held: Ctrl+wheel, which
+    /// [`crate::input::EventTranslator`] turns into
+    /// [`gorgon_petra::input::InputEvent::Zoom`] and never into a scroll.
+    /// Positive `delta` zooms in.
+    Zoom {
+        /// Wheel travel in logical units ([`egui::MouseWheelUnit::Point`]).
+        delta: f32,
+    },
+    /// The pointer moves to the target and a side button is pressed and
+    /// released there: X2 (`forward: true`) or X1, which
+    /// [`crate::input::pointer_button`] reads as
+    /// [`gorgon_petra::input::PointerButton::Forward`] and
+    /// [`gorgon_petra::input::PointerButton::Back`]. Both are window-level,
+    /// so the target only places the pointer; it is not a node the press is
+    /// aimed at.
+    Navigate {
+        /// X2, go forward, rather than X1, go back.
+        forward: bool,
+    },
     /// A full keystroke — press then release — delivered to whichever node
     /// is focused, the same as `text-edit`.
     Key {
@@ -288,6 +308,14 @@ pub fn inject_action<A: App>(
         Action::Scroll { delta } => {
             let pos = resolve_point(host.frame(), target)?;
             push_scroll(raw, pos, *delta);
+        }
+        Action::Zoom { delta } => {
+            let pos = resolve_point(host.frame(), target)?;
+            push_zoom(raw, pos, *delta);
+        }
+        Action::Navigate { forward } => {
+            let pos = resolve_point(host.frame(), target)?;
+            push_side_click(raw, pos, *forward);
         }
         Action::Key { key, modifiers } => {
             require_present(host.frame(), target)?;
@@ -619,6 +647,44 @@ fn push_drag(raw: &mut RawInput, from: Point, to: Point, modifiers: Modifiers) {
     push_pointer_move(raw, mid);
     push_pointer_move(raw, to);
     push_pointer_up(raw, to, modifiers);
+}
+
+/// A pointer move to `pos` and a Ctrl+wheel of `delta` logical units there,
+/// with the modifier change a keyboard reports first. [`push_scroll`]'s
+/// zooming twin.
+fn push_zoom(raw: &mut RawInput, pos: Point, delta: f32) {
+    let at = to_pos2(pos);
+    let held = egui::Modifiers::COMMAND;
+    raw.events.push(Event::PointerMoved(at));
+    raw.events.push(Event::ModifiersChanged(held));
+    raw.events.push(Event::MouseWheel {
+        unit: MouseWheelUnit::Point,
+        delta: Vec2::new(0.0, delta),
+        phase: TouchPhase::Move,
+        modifiers: held,
+    });
+    raw.events
+        .push(Event::ModifiersChanged(egui::Modifiers::NONE));
+}
+
+/// A pointer move to `pos` and a press and release of side button X2
+/// (`forward`) or X1 there, in one `RawInput`.
+fn push_side_click(raw: &mut RawInput, pos: Point, forward: bool) {
+    let at = to_pos2(pos);
+    let button = if forward {
+        EguiButton::Extra2
+    } else {
+        EguiButton::Extra1
+    };
+    raw.events.push(Event::PointerMoved(at));
+    for pressed in [true, false] {
+        raw.events.push(Event::PointerButton {
+            pos: at,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
 }
 
 /// A pointer move to `pos` followed by a wheel delta there, in
@@ -1308,6 +1374,42 @@ mod tests {
             "got {:?}",
             raw.events
         );
+    }
+
+    /// A driven Ctrl+wheel arrives as one zoom where the pointer is, and a
+    /// driven side button as Back or Forward, through the same translator a
+    /// physical mouse goes through.
+    #[test]
+    fn a_driven_zoom_and_side_buttons_arrive_as_petra_events() {
+        use gorgon_petra::input::PointerButton;
+        let at = Point::new(7.0, 9.0);
+        let mut raw = RawInput::default();
+        super::push_zoom(&mut raw, at, -40.0);
+        super::push_side_click(&mut raw, at, false);
+        super::push_side_click(&mut raw, at, true);
+        let mut translator = crate::input::EventTranslator::default();
+        let out = translator.translate_all(&raw.events);
+        let zooms: Vec<f32> = out
+            .iter()
+            .filter_map(|event| match event {
+                InputEvent::Zoom { pos, factor } if *pos == at => Some(*factor),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(zooms.len(), 1, "{out:?}");
+        assert!(zooms[0] < 1.0, "a wheel towards the operator zooms out");
+        assert!(
+            !out.iter().any(|e| matches!(e, InputEvent::Scroll { .. })),
+            "{out:?}"
+        );
+        let presses: Vec<PointerButton> = out
+            .iter()
+            .filter_map(|event| match event {
+                InputEvent::PointerPressed { button, .. } => Some(*button),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(presses, [PointerButton::Back, PointerButton::Forward]);
     }
 
     /// And the whole way through: a driven copy chord reaches the host as

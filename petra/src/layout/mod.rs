@@ -57,6 +57,10 @@ pub struct TextRequest<'a> {
     /// underline and band are read by the painter from the frame and never
     /// change an extent.
     pub runs: TextRuns<'a>,
+    /// The text scale in force ([`crate::tree::Props::text_scale`]): the
+    /// style's font size, line height and tracking are multiplied by it.
+    /// [`Scale::ONE`] is the style as the theme declares it.
+    pub text_scale: Scale,
 }
 
 /// The runs a [`TextRequest`] shapes with, borrowed in whichever form the
@@ -387,6 +391,12 @@ pub struct LayoutCtx<'a> {
     pub theme_rev: u64,
     /// Display scale.
     pub scale: Scale,
+    /// The text scale in force where the walk currently is
+    /// ([`crate::tree::Props::text_scale`]). Start it at [`Scale::ONE`]; the
+    /// walk maintains it. It keys every measurement
+    /// ([`LayoutCtx::key`]), so a node measured under one scale never
+    /// answers for another.
+    pub text_scale: Scale,
     /// The `scroll` ancestors of wherever the walk currently is. Start it
     /// empty; the walk maintains it.
     pub scroll: ScrollStack,
@@ -471,6 +481,7 @@ impl LayoutCtx<'_> {
             proposal,
             theme_rev: self.theme_rev,
             scale: self.scale,
+            text_scale: self.text_scale,
         }
     }
 
@@ -625,6 +636,13 @@ impl AnchorRects {
     }
 }
 
+/// `outer` multiplied by a declared [`crate::tree::Props::text_scale`], or
+/// `outer` unchanged when the product is not a usable scale. The one rule
+/// both walks apply, so a measure and a placement never disagree on it.
+fn compose_text_scale(outer: Scale, factor: f32) -> Scale {
+    Scale::new(outer.factor() * factor).unwrap_or(outer)
+}
+
 /// The rect, paint order, clip, and opacity a parent gives one child, and
 /// the window every slot in the walk descends from.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -666,6 +684,17 @@ pub struct Slot {
     /// descendant's slot carries it. The sink projects it onto
     /// [`crate::frame::PlacementSemantics::concealed`].
     pub concealed: bool,
+    /// The text scale in force ([`crate::tree::Props::text_scale`]),
+    /// cumulative like [`Slot::opacity`]: each declaration on the way down
+    /// multiplies it.
+    ///
+    /// On the slot for the reason [`Slot::group_engaged`] is: slot equality
+    /// is the reuse test, so a subtree whose ancestor changed its scale is
+    /// offered a different slot and is placed again, even when its own
+    /// `Arc` did not move. A carried-over subtree keeps the text size it
+    /// was placed with, which is exactly the stale picture that test exists
+    /// to refuse.
+    pub text_scale: Scale,
 }
 
 impl Slot {
@@ -680,6 +709,19 @@ impl Slot {
             window: rect,
             group_engaged: None,
             concealed: false,
+            text_scale: Scale::ONE,
+        }
+    }
+
+    /// This slot with the text scale multiplied by `factor`
+    /// ([`crate::tree::Props::text_scale`]). A factor that is not finite
+    /// and positive leaves it alone; acceptance refuses one before a walk
+    /// ever sees it.
+    #[must_use]
+    pub fn text_scaled(self, factor: f32) -> Self {
+        Self {
+            text_scale: compose_text_scale(self.text_scale, factor),
+            ..self
         }
     }
 
@@ -780,6 +822,13 @@ pub fn measure(
         return Size::ZERO;
     }
     path.push(node.key.clone());
+    // The node's own text scale is in force for itself and everything under
+    // it, and so is part of its own key: the same multiplication
+    // `place_node` applies to the slot.
+    let outer_text_scale = ctx.text_scale;
+    if let Some(factor) = node.props.text_scale {
+        ctx.text_scale = compose_text_scale(outer_text_scale, factor);
+    }
     let (proposal, relative) = container_relative(node, ctx, proposal);
     let key = ctx.key(path, proposal);
     let answer = if let Some(hit) = ctx.cache.peek(&key) {
@@ -793,6 +842,7 @@ pub fn measure(
         ctx.cache.insert(key, clamped);
         clamped
     };
+    ctx.text_scale = outer_text_scale;
     path.pop();
     answer
 }
@@ -1069,6 +1119,10 @@ fn place_node(
         slot
     };
     let slot = reveal_slot(node, ctx.state, path, slot);
+    let slot = match node.props.text_scale {
+        Some(factor) => slot.text_scaled(factor),
+        None => slot,
+    };
 
     // Can this whole subtree be carried over from the previous frame? The
     // tests run cheapest-first, and the dirty scan runs last because it is
@@ -1101,7 +1155,12 @@ fn place_node(
         state.note_replaced();
         state.enter(counterpart);
     }
+    // Whatever this container measures while it places its children is
+    // measured under the scale its slot carries. Restored after, because a
+    // sibling's slot carries its own.
+    let outer_text_scale = std::mem::replace(&mut ctx.text_scale, slot.text_scale);
     let caret = place_kind(node, ctx, path, slot, sink);
+    ctx.text_scale = outer_text_scale;
     if let Some(state) = ctx.reuse.as_mut() {
         state.leave();
     }
@@ -1112,6 +1171,12 @@ fn place_node(
             "a container must push its own placement before its children's"
         );
         let mut content = paint_content_of(node);
+        // The text scale is a fact about where the node sits, not about the
+        // node, so the walk writes it, as it writes the caret below. The
+        // painter shapes from it and the digest hashes it.
+        if let Some(text) = content.text.as_mut() {
+            text.scale = slot.text_scale;
+        }
         // The resolved side of an anchored surface is not knowable to an
         // author and not derivable from the tree — only the ladder that just
         // ran knows which way the box flipped — so this is the one payload
@@ -1184,6 +1249,9 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         text: text.map(|text| TextPaint {
             text,
             style: props.style.as_ref().map(|t| t.as_str().to_owned()),
+            // The walk writes the scale in force (`place_node`); a node
+            // read on its own is at the theme's size.
+            scale: Scale::ONE,
             wrap: props.wrap.unwrap_or_default(),
             max_lines: props.max_lines,
             runs: if own {

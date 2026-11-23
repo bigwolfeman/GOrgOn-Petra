@@ -562,6 +562,7 @@ pub fn petrify(
         window: viewport_rect,
         group_engaged: None,
         concealed: false,
+        text_scale: crate::geom::Scale::ONE,
     };
     let mut sink = PlacementList::new();
     crate::layout::place(tree, ctx, &mut path, slot, &mut sink);

@@ -17,7 +17,7 @@
 //! painted over another.
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
-use crate::geom::{Rect, Size};
+use crate::geom::{Rect, Scale, Size};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, TextRequest, TextRuns, semantics_of};
 use crate::token::FocusRing;
 use crate::tree::{
@@ -27,7 +27,11 @@ use crate::tree::{
 
 /// Build the shaper request a text node's resolved props describe, offering
 /// `available_width` (`None` for an open probe).
-fn text_request<'a>(props: &TextProps<'a>, available_width: Option<f32>) -> TextRequest<'a> {
+fn text_request<'a>(
+    props: &TextProps<'a>,
+    available_width: Option<f32>,
+    text_scale: Scale,
+) -> TextRequest<'a> {
     TextRequest {
         text: props.text,
         style: props.style,
@@ -35,6 +39,7 @@ fn text_request<'a>(props: &TextProps<'a>, available_width: Option<f32>) -> Text
         max_lines: props.max_lines,
         available_width,
         runs: TextRuns::Tree(props.runs),
+        text_scale,
     }
 }
 
@@ -103,10 +108,15 @@ pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal)
         }
     }
     if props.wrap == TextWrap::Wrap && proposal.horizontal == Proposal::Zero {
-        let word = ctx.content.min_content_width(&text_request(&props, None));
-        return ctx.content.text(&text_request(&props, Some(word))).size;
+        let word = ctx
+            .content
+            .min_content_width(&text_request(&props, None, ctx.text_scale));
+        return ctx
+            .content
+            .text(&text_request(&props, Some(word), ctx.text_scale))
+            .size;
     }
-    let req = text_request(&props, proposal.horizontal.available());
+    let req = text_request(&props, proposal.horizontal.available(), ctx.text_scale);
     ctx.content.text(&req).size
 }
 
@@ -115,7 +125,9 @@ pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal)
 /// they share one height.
 pub(crate) fn first_line_height(node: &ViewNode, ctx: &mut LayoutCtx<'_>, width: f32) -> f32 {
     let props = node.props.text();
-    let measured = ctx.content.text(&text_request(&props, Some(width)));
+    let measured = ctx
+        .content
+        .text(&text_request(&props, Some(width), ctx.text_scale));
     let lines = u16::try_from(measured.lines.max(1)).unwrap_or(u16::MAX);
     measured.size.h / f32::from(lines)
 }
@@ -160,7 +172,7 @@ pub fn place(
 ) {
     let props = node.props.text();
     let width = slot.rect.w.max(0.0);
-    let req = text_request(&props, Some(width));
+    let req = text_request(&props, Some(width), ctx.text_scale);
     let measurement = ctx.content.text(&req);
 
     // Two different facts, kept apart. The shaper's `truncated` answers only
@@ -223,7 +235,9 @@ const READABLE: &str = "0000000000";
 /// Whether a [`TextWrap::WrapOrHide`] run shows nothing at `width`: the box
 /// is narrower than both the run's widest word and [`READABLE`].
 fn hides_at(props: &TextProps<'_>, ctx: &mut LayoutCtx<'_>, width: f32) -> bool {
-    let word = ctx.content.min_content_width(&text_request(props, None));
+    let word = ctx
+        .content
+        .min_content_width(&text_request(props, None, ctx.text_scale));
     if width >= word - WORD_SLACK {
         return false;
     }
@@ -236,6 +250,7 @@ fn hides_at(props: &TextProps<'_>, ctx: &mut LayoutCtx<'_>, width: f32) -> bool 
             max_lines: None,
             available_width: None,
             runs: TextRuns::Plain,
+            text_scale: ctx.text_scale,
         })
         .size
         .w;

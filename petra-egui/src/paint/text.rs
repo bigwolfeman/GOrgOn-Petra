@@ -96,6 +96,7 @@ pub(super) fn paint_text(
             max_lines: text.max_lines,
             available_width: Some(inner_w),
             runs: gorgon_petra::layout::TextRuns::Frame(&text.runs),
+            text_scale: text.scale,
         };
         // The selected stretch, resolved as a pair. Neither half is usable
         // alone: the fill without the ink can sink a coloured run below AA,

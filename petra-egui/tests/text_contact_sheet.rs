@@ -356,6 +356,7 @@ fn render_arm(
             max_lines: Some(1),
             available_width: Some(GUTTER_W - 4.0),
             runs: gorgon_petra::layout::TextRuns::Plain,
+            text_scale: gorgon_petra::geom::Scale::ONE,
         });
         let prose_galley = shaper.galley(&TextRequest {
             text: SAMPLE_PROSE,
@@ -364,6 +365,7 @@ fn render_arm(
             max_lines: Some(1),
             available_width: Some(CELL_W),
             runs: gorgon_petra::layout::TextRuns::Plain,
+            text_scale: gorgon_petra::geom::Scale::ONE,
         });
         let repeat_galley = shaper.galley(&TextRequest {
             text: SAMPLE_REPEAT,
@@ -372,6 +374,7 @@ fn render_arm(
             max_lines: Some(1),
             available_width: Some(REPEAT_W),
             runs: gorgon_petra::layout::TextRuns::Plain,
+            text_scale: gorgon_petra::geom::Scale::ONE,
         });
 
         let painter = ui.painter();

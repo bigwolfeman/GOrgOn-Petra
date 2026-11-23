@@ -266,6 +266,24 @@ impl TextStyle {
         }
     }
 
+    /// This style at `factor` times its size: the font, the line height and
+    /// the tracking all scale together, so a zoomed run keeps the
+    /// proportions the token declares
+    /// ([`gorgon_petra::tree::Props::text_scale`]). A factor of exactly 1
+    /// is the style itself.
+    #[must_use]
+    pub fn scaled(&self, factor: f32) -> Self {
+        if factor == 1.0 {
+            return self.clone();
+        }
+        Self {
+            font: FontId::new(self.font.size * factor, self.font.family.clone()),
+            faces: self.faces.clone(),
+            line_height: self.line_height.map(|h| h * factor),
+            extra_letter_spacing: self.extra_letter_spacing * factor,
+        }
+    }
+
     /// The font a run set in `face` draws with: this style's own font for
     /// the plain face or a style that has no run families.
     #[must_use]
@@ -722,8 +740,14 @@ impl GalleyShaper {
     pub fn galley_runs(&mut self, req: &TextRequest<'_>, runs: &[InkRun]) -> Arc<Galley> {
         // Cloned rather than borrowed: the shaping below needs `&mut self`
         // for the cache and the counters, and a `TextStyle` is a size, a
-        // family handle and an optional float.
-        let style = self.typography.resolve(req.style).0.clone();
+        // family handle and an optional float. Scaled before the key is
+        // built, so a zoomed run and the theme-sized one never share a
+        // galley: the key already holds the size, leading and tracking.
+        let style = self
+            .typography
+            .resolve(req.style)
+            .0
+            .scaled(req.text_scale.factor());
         let faces = req.runs.faces();
         let (max_rows, break_anywhere, overflow) = wrapping(req);
         let wrap_width = req.available_width.unwrap_or(f32::INFINITY);
@@ -1366,7 +1390,43 @@ mod tests {
             max_lines: None,
             available_width: width,
             runs: gorgon_petra::layout::TextRuns::Plain,
+            text_scale: gorgon_petra::geom::Scale::ONE,
         }
+    }
+
+    /// A text scale reaches the glyphs: the same run under `text_scale` 2
+    /// shapes twice as tall and wide as at 1, as one galley of its own (the
+    /// cache key holds the scaled size), and a run under scale 1 is exactly
+    /// the theme's style.
+    ///
+    /// Falsify by dropping the `.scaled(..)` call in `galley_runs`: both
+    /// requests answer the same galley.
+    #[test]
+    fn a_text_scale_shapes_the_run_at_that_multiple_of_its_style() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let at = |s: &mut GalleyShaper, k: f32| {
+            s.galley(&TextRequest {
+                style: Some("typography.body"),
+                text_scale: gorgon_petra::geom::Scale::new(k).unwrap(),
+                ..req("Zoomed words", None, TextWrap::Wrap)
+            })
+        };
+        let one = at(&mut s, 1.0);
+        let two = at(&mut s, 2.0);
+        assert!(
+            !Arc::ptr_eq(&one, &two),
+            "a zoomed run shared the plain galley"
+        );
+        let ratio_h = two.rect.height() / one.rect.height();
+        let ratio_w = two.rect.width() / one.rect.width();
+        assert!((ratio_h - 2.0).abs() < 0.05, "height ratio {ratio_h}");
+        assert!((ratio_w - 2.0).abs() < 0.1, "width ratio {ratio_w}");
+        let style = s.typography().style("typography.body").unwrap().clone();
+        assert_eq!(style.scaled(1.0), style);
+        let doubled = style.scaled(2.0);
+        assert_eq!(doubled.font.size, style.font.size * 2.0);
+        assert_eq!(doubled.line_height, style.line_height.map(|h| h * 2.0));
     }
 
     /// The hit test answers a byte offset, and answers it in bytes.

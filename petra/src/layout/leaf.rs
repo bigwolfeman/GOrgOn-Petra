@@ -224,6 +224,7 @@ fn measure_input(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposa
         max_lines: input_max_lines,
         available_width: inner_width,
         runs,
+        text_scale: ctx.text_scale,
     };
     let size = ctx.content.text(&req).size;
     // A field fills the width it is given and asks for all the width there

@@ -344,25 +344,34 @@ impl MonoContent {
     pub fn run_width(&self, text: &str) -> f32 {
         text.chars().count() as f32 * self.char_w
     }
+
+    /// The advance and line height `req` shapes with: this measurer's own,
+    /// multiplied by the request's text scale, as a real shaper multiplies
+    /// the style's size and line height.
+    fn metrics(&self, req: &TextRequest<'_>) -> (f32, f32) {
+        let k = req.text_scale.factor();
+        (self.char_w * k, self.line_h * k)
+    }
 }
 
 impl ContentMeasure for MonoContent {
     fn text(&mut self, req: &TextRequest<'_>) -> TextMeasurement {
         self.calls += 1;
-        let full = self.run_width(req.text);
+        let (char_w, line_h) = self.metrics(req);
+        let full = req.text.chars().count() as f32 * char_w;
         let Some(available) = req.available_width else {
             // An open probe: the full unwrapped run, one line.
             return TextMeasurement {
-                size: Size::new(full, self.line_h),
+                size: Size::new(full, line_h),
                 truncated: false,
                 lines: 1,
                 ink: self.ink,
             };
         };
-        let per_line = (available / self.char_w).floor().max(0.0) as usize;
+        let per_line = (available / char_w).floor().max(0.0) as usize;
         if per_line == 0 {
             return TextMeasurement {
-                size: Size::new(0.0, self.line_h),
+                size: Size::new(0.0, line_h),
                 truncated: !req.text.is_empty(),
                 lines: 1,
                 ink: self.ink,
@@ -385,7 +394,7 @@ impl ContentMeasure for MonoContent {
             available
         };
         TextMeasurement {
-            size: Size::new(widest, lines as f32 * self.line_h),
+            size: Size::new(widest, lines as f32 * line_h),
             truncated,
             lines,
             ink: self.ink,
@@ -395,18 +404,20 @@ impl ContentMeasure for MonoContent {
     /// The longest whitespace-free stretch, in characters, times the
     /// advance. Weight is ignored, as it is in `text`.
     fn min_content_width(&mut self, req: &TextRequest<'_>) -> f32 {
+        let (char_w, _) = self.metrics(req);
         req.text
             .split(char::is_whitespace)
             .map(|word| word.chars().count())
             .max()
             .unwrap_or(0) as f32
-            * self.char_w
+            * char_w
     }
 
     /// The same arithmetic [`Self::text`] wraps by: `per_line` characters
     /// a line, broken anywhere, cut at the line cap; one line for `Clip` and
     /// `Ellipsis`. Weight is ignored, as it is in `text`.
     fn fragments(&mut self, req: &TextRequest<'_>, range: Range<usize>) -> Vec<Rect> {
+        let (char_w, line_h) = self.metrics(req);
         let char_at = |byte: usize| req.text[..byte.min(req.text.len())].chars().count();
         let (from, to) = (char_at(range.start), char_at(range.end));
         if from >= to {
@@ -415,7 +426,7 @@ impl ContentMeasure for MonoContent {
         let chars = req.text.chars().count();
         let per_line = match req.available_width {
             None => chars.max(1),
-            Some(w) => ((w / self.char_w).floor().max(0.0) as usize).max(1),
+            Some(w) => ((w / char_w).floor().max(0.0) as usize).max(1),
         };
         let lines = match (req.wrap, req.available_width) {
             (_, None) | (TextWrap::Ellipsis | TextWrap::Clip, _) => 1,
@@ -430,10 +441,10 @@ impl ContentMeasure for MonoContent {
             let (a, b) = (from.max(start), to.min(end));
             if a < b {
                 out.push(Rect::new(
-                    (a - start) as f32 * self.char_w,
-                    line as f32 * self.line_h,
-                    (b - a) as f32 * self.char_w,
-                    self.line_h,
+                    (a - start) as f32 * char_w,
+                    line as f32 * line_h,
+                    (b - a) as f32 * char_w,
+                    line_h,
                 ));
             }
         }
@@ -633,6 +644,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             theme: &self.theme,
             theme_rev: self.theme_rev,
             scale: self.scale,
+            text_scale: crate::geom::Scale::ONE,
             scroll: ScrollStack::new(),
             reuse: None,
             anchors: AnchorRects::new(),
@@ -776,6 +788,7 @@ mod tests {
             max_lines: None,
             available_width: width,
             runs: crate::layout::TextRuns::Plain,
+            text_scale: crate::geom::Scale::ONE,
         }
     }
 

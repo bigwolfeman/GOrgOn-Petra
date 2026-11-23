@@ -171,6 +171,17 @@ impl EventTranslator {
                     MouseWheelUnit::Line => self.line_extent,
                     MouseWheelUnit::Page => self.line_extent * LINES_PER_PAGE,
                 };
+                // The zoom modifier makes the wheel a zoom, as egui's own
+                // `InputState` does with its default `zoom_modifier`
+                // (`Modifiers::COMMAND`: Ctrl, or Cmd on a Mac). Nothing
+                // scrolls under it.
+                if modifiers.command {
+                    let along = (delta.x + delta.y) * scale;
+                    return Some(InputEvent::Zoom {
+                        pos,
+                        factor: wheel_zoom_factor(along),
+                    });
+                }
                 // Shift turns a wheel sideways, as egui's own `WheelState`
                 // does with its default `horizontal_scroll_modifier`: a mouse
                 // has no horizontal wheel, and every desktop toolkit answers
@@ -225,6 +236,17 @@ impl EventTranslator {
             // keystroke, as `Copy` is. Dropped until 2026-11-20, so Ctrl+X
             // reached nothing in a real window.
             Event::Cut => Some(InputEvent::Cut),
+            // A trackpad pinch: the same intent as Ctrl+wheel from another
+            // device. It has no position of its own, so it lands where the
+            // pointer last was, and is dropped before the pointer was ever
+            // seen, as a wheel is.
+            Event::Zoom(factor) => {
+                let pos = self.last_pointer?;
+                (factor.is_finite() && *factor > 0.0).then_some(InputEvent::Zoom {
+                    pos,
+                    factor: *factor,
+                })
+            }
             Event::WindowFocused(true) => Some(InputEvent::WindowFocused),
             Event::WindowFocused(false) => Some(InputEvent::WindowBlurred),
             other => {
@@ -248,6 +270,18 @@ impl EventTranslator {
     }
 }
 
+/// Logical units of wheel travel per e-fold of zoom: egui's
+/// `InputOptions::scroll_zoom_speed` is its reciprocal (`1.0 / 200.0`).
+pub const WHEEL_ZOOM_UNITS: f32 = 200.0;
+
+/// The zoom factor `along` logical units of wheel travel ask for, the way
+/// egui's `InputState::zoom_delta` computes it: `exp(along / 200)`. Positive
+/// travel (the wheel turned away from the operator) zooms in.
+#[must_use]
+pub fn wheel_zoom_factor(along: f32) -> f32 {
+    (along / WHEEL_ZOOM_UNITS).exp()
+}
+
 /// Petra's modifier set from egui's.
 #[must_use]
 pub fn translate_modifiers(m: egui::Modifiers) -> Modifiers {
@@ -267,7 +301,10 @@ pub fn pointer_button(button: EguiButton) -> Option<PointerButton> {
         EguiButton::Primary => Some(PointerButton::Primary),
         EguiButton::Secondary => Some(PointerButton::Secondary),
         EguiButton::Middle => Some(PointerButton::Middle),
-        EguiButton::Extra1 | EguiButton::Extra2 => None,
+        // egui's names for X1 and X2: "Typically used as 'Back'" and
+        // "Typically used as 'Forward'" (`egui::PointerButton`).
+        EguiButton::Extra1 => Some(PointerButton::Back),
+        EguiButton::Extra2 => Some(PointerButton::Forward),
     }
 }
 
@@ -660,9 +697,79 @@ mod tests {
     #[test]
     fn an_event_petra_has_no_meaning_for_is_counted_by_name() {
         let mut t = translator();
-        assert_eq!(t.translate(&Event::Zoom(1.1)), None);
-        assert_eq!(t.translate(&Event::Zoom(1.2)), None);
-        assert_eq!(t.untranslated(), [("Zoom", 2)]);
+        assert_eq!(t.translate(&Event::Rotate(0.1)), None);
+        assert_eq!(t.translate(&Event::Rotate(0.2)), None);
+        assert_eq!(t.untranslated(), [("Rotate", 2)]);
+    }
+
+    /// Ctrl+wheel is a zoom and never a scroll, the way egui's own
+    /// `zoom_delta` reads it: one desktop notch away from the operator is
+    /// `exp(40 / 200)` in, one towards is its reciprocal, and a trackpad
+    /// pinch passes its factor through. Before this, Ctrl+wheel scrolled the
+    /// view under the pointer and a pinch was dropped as untranslated.
+    #[test]
+    fn the_zoom_modifier_turns_the_wheel_into_a_zoom_and_a_pinch_is_one_too() {
+        let mut t = translator();
+        let wheel = |y: f32, modifiers: egui::Modifiers| Event::MouseWheel {
+            unit: MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, y),
+            phase: TouchPhase::Move,
+            modifiers,
+        };
+        assert_eq!(
+            t.translate(&wheel(1.0, egui::Modifiers::COMMAND)),
+            None,
+            "no pointer yet, nowhere to zoom"
+        );
+        t.translate(&Event::PointerMoved(Pos2::new(5.0, 6.0)));
+        let zoom = |t: &mut EventTranslator, event: &Event| match t.translate(event) {
+            Some(InputEvent::Zoom { pos, factor }) => {
+                assert_eq!(pos, Point::new(5.0, 6.0));
+                factor
+            }
+            other => panic!("a zoom was expected, got {other:?}"),
+        };
+        let notch = zoom(&mut t, &wheel(1.0, egui::Modifiers::COMMAND));
+        assert!(
+            (notch - (LINE_EXTENT_DESKTOP / 200.0).exp()).abs() < 1e-6,
+            "{notch}"
+        );
+        let back = zoom(
+            &mut t,
+            &wheel(-1.0, egui::Modifiers::CTRL | egui::Modifiers::COMMAND),
+        );
+        assert!((notch * back - 1.0).abs() < 1e-6, "in then out is no zoom");
+        assert_eq!(zoom(&mut t, &Event::Zoom(1.5)), 1.5);
+        assert!(matches!(
+            t.translate(&wheel(1.0, egui::Modifiers::NONE)),
+            Some(InputEvent::Scroll { .. })
+        ));
+        assert!(t.untranslated().is_empty(), "{:?}", t.untranslated());
+    }
+
+    /// The side buttons are Back and Forward, as egui documents X1 and X2.
+    /// They used to be dropped, so a five-button mouse did nothing.
+    #[test]
+    fn the_side_buttons_are_back_and_forward() {
+        let mut t = translator();
+        for (egui_button, want) in [
+            (egui::PointerButton::Extra1, PointerButton::Back),
+            (egui::PointerButton::Extra2, PointerButton::Forward),
+        ] {
+            let out = t.translate(&Event::PointerButton {
+                pos: Pos2::new(1.0, 2.0),
+                button: egui_button,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            match out {
+                Some(InputEvent::PointerPressed { button, .. }) => {
+                    assert_eq!(button, want);
+                    assert!(button.navigates());
+                }
+                other => panic!("{egui_button:?}: {other:?}"),
+            }
+        }
     }
 
     /// The copy command is the only way a copy reaches Petra from a window:
@@ -706,7 +813,7 @@ mod tests {
         let mut t = translator();
         let out = t.translate_all(&[
             Event::PointerMoved(Pos2::new(1.0, 1.0)),
-            Event::Zoom(1.0),
+            Event::Rotate(1.0),
             Event::Text("a".into()),
             Event::WindowFocused(false),
         ]);

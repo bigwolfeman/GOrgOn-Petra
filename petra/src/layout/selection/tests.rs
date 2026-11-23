@@ -57,6 +57,7 @@ fn node(
             text: Some(TextPaint {
                 text: text.to_owned(),
                 style: None,
+                scale: crate::geom::Scale::ONE,
                 wrap: TextWrap::Clip,
                 max_lines: None,
                 runs: Vec::new(),

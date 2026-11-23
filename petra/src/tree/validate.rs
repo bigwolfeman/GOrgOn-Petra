@@ -1157,6 +1157,7 @@ fn check_node(
     }
 
     check_opacity(node, &mut push);
+    check_text_scale(node, &mut push);
     check_padding(node, &mut push);
     check_text_runs(node, &mut push);
     check_transition(node, registry, &mut push);
@@ -1344,6 +1345,20 @@ fn check_opacity(node: &ViewNode, push: &mut impl FnMut(Violation)) {
             prop: "opacity",
             value: format!("{opacity}"),
             expected: "a finite value in [0, 1]",
+        });
+    }
+}
+
+/// A declared `text_scale` is finite and positive: a zero scale would
+/// collapse every run to nothing, and a negative one has no meaning.
+fn check_text_scale(node: &ViewNode, push: &mut impl FnMut(Violation)) {
+    if let Some(scale) = node.props.text_scale
+        && crate::geom::Scale::new(scale).is_err()
+    {
+        push(Violation::ValueOutOfRange {
+            prop: "text_scale",
+            value: format!("{scale}"),
+            expected: "a finite value above 0",
         });
     }
 }
