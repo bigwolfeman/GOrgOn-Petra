@@ -17,8 +17,9 @@
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, ICON_DISABLED, LAYER_HOVER, SIZE_LG, SIZE_MD,
-    SIZE_XL, SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED,
+    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, CHROME_GROUND, CHROME_HOVER, CHROME_RULE,
+    CHROME_SELECTED, CHROME_SIDE, ICON_DISABLED, LAYER_HOVER, SIZE_LG, SIZE_MD, SIZE_XL,
+    SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_FAINT, TEXT_MUTED,
     TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL, t,
 };
 use super::{pad, stack};
@@ -487,6 +488,215 @@ fn tab_variant_full(
     node
 }
 
+/// A workbench document tab's height: the reference editors' 35.
+pub const DOCUMENT_TAB_HEIGHT: f32 = 35.0;
+/// The selected document tab's top indicator. One unit: a workbench frame
+/// marks the current document quietly, and the fill change says it too.
+const DOCUMENT_INDICATOR: f32 = 1.0;
+
+/// One tab of a workbench's document strip: the file an editor shows.
+///
+/// [`DOCUMENT_TAB_HEIGHT`] (35) tall, `$spacing-03` across each side of
+/// the label, one weight in both states (the reference editors do not
+/// embolden the current tab, so the strip does not reflow when the
+/// selection moves). At rest the tab is on the frame (`chrome.side`) with
+/// a `text.faint` label; selected it takes the working surface's fill
+/// (`chrome.ground`), so it joins the document under it, a `text.primary`
+/// label, and a one-unit accent bar on its top edge. The fill and the bar
+/// are two channels, neither a hue a red-green colour-blind reader loses.
+/// A one-unit `chrome.rule` on the trailing edge parts it from the next tab.
+pub fn document_tab(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
+    let key = key.into();
+    let label = label.into();
+    let mut label_node = text("label", label.clone());
+    label_node.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    label_node.props.tokens.insert(
+        "foreground".into(),
+        t(if selected { TEXT_PRIMARY } else { TEXT_FAINT }),
+    );
+    label_node
+        .props
+        .tokens
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
+    let mut body = stack("body", Axis::Horizontal, None, vec![label_node]);
+    body.props.align = Some(Align::Center);
+    body.props.padding = Some(pad(SPACING_03, SPACING_01));
+    let mark = indicator_bar(
+        Axis::Horizontal,
+        DOCUMENT_INDICATOR,
+        selected.then_some(ACCENT_PRIMARY),
+    );
+    let mut edge = stack("edge", Axis::Vertical, None, vec![]);
+    edge.props
+        .tokens
+        .insert("background".into(), t(CHROME_RULE));
+    let mut props = Props {
+        columns: vec![TrackSize::FitContent, TrackSize::Fixed { value: 1.0 }],
+        rows: vec![
+            TrackSize::Fixed {
+                value: DOCUMENT_INDICATOR,
+            },
+            TrackSize::Weight { weight: 1.0 },
+        ],
+        align: Some(Align::Stretch),
+        ..Props::default()
+    };
+    props.tokens.insert("background".into(), t(CHROME_SIDE));
+    props
+        .tokens
+        .insert("background@hover".into(), t(CHROME_HOVER));
+    props
+        .tokens
+        .insert("background@selected".into(), t(CHROME_GROUND));
+    props
+        .tokens
+        .insert("background@selected-hover".into(), t(CHROME_GROUND));
+    props
+        .tokens
+        .insert("background@disabled".into(), t(CHROME_SELECTED));
+    // The strip's hairline runs under every tab but the selected one, so the
+    // selected tab opens into the working surface below it, as an editor's
+    // active tab does.
+    if !selected {
+        props.tokens.insert("border-bottom".into(), t(CHROME_RULE));
+    }
+    // Grid order is row by row: the indicator over the label, and the rule
+    // spanning both rows down the trailing edge.
+    let mut rule_top = edge.clone();
+    rule_top.key = Key::new("edge-top");
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(props)
+        .with_children(vec![mark, rule_top, body, edge])
+        .with_constraints(Constraints {
+            vertical: AxisConstraint {
+                min: Some(DOCUMENT_TAB_HEIGHT),
+                max: Some(DOCUMENT_TAB_HEIGHT),
+                priority: 0,
+            },
+            ..Constraints::default()
+        })
+        .interactive(
+            Role::Tab,
+            label,
+            &[Interaction::Focus, Interaction::Click, Interaction::Hover],
+        )
+        .with_behaviour(Behaviour {
+            intent: Intent::Select,
+            phase: Phase::OnRelease,
+        })
+        .owning_its_text();
+    node.semantics.selected = selected;
+    // The indicator owns the top edge, so focus takes the bottom one, as on
+    // a contained tab.
+    node.semantics.focus_figure = FocusFigure::BarInside;
+    node
+}
+
+/// The width of a [`chrome_icon_tab`]: a 16-unit glyph with eight on each
+/// side, the reference editors' side bar view switcher pitch.
+pub const CHROME_ICON_TAB_WIDTH: f32 = 32.0;
+
+/// One glyph tab of a workbench's view switcher (Explorer, Search, Source
+/// control at the top of a side bar). `label` is the accessible name.
+///
+/// [`DOCUMENT_TAB_HEIGHT`] tall, so a switcher row lines up with the
+/// document strip beside it. At rest the glyph is `icon-secondary` on the
+/// frame; selected it is `icon-primary` on `chrome.selected` with a
+/// two-unit accent bar on the bottom edge. The bar is the shape channel,
+/// the fill and the brighter glyph are lightness: none of the three is a
+/// hue alone.
+pub fn chrome_icon_tab(
+    key: impl Into<Key>,
+    mark: IconMark,
+    label: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
+    let key = key.into();
+    let label = label.into();
+    let glyph = icon_toned(
+        "glyph",
+        mark,
+        if selected {
+            IconTone::Primary
+        } else {
+            IconTone::Secondary
+        },
+    );
+    let mut body = stack("body", Axis::Horizontal, None, vec![glyph]);
+    body.props.align = Some(Align::Center);
+    body.props.justify = Some(crate::tree::Justify::Center);
+    let mark = indicator_bar(
+        Axis::Horizontal,
+        LINE_INDICATOR,
+        selected.then_some(ACCENT_PRIMARY),
+    );
+    let mut props = Props {
+        columns: vec![TrackSize::Weight { weight: 1.0 }],
+        rows: vec![
+            TrackSize::Weight { weight: 1.0 },
+            TrackSize::Fixed {
+                value: LINE_INDICATOR,
+            },
+        ],
+        align: Some(Align::Stretch),
+        ..Props::default()
+    };
+    props.tokens.insert("background".into(), t(CHROME_SIDE));
+    props
+        .tokens
+        .insert("background@hover".into(), t(CHROME_HOVER));
+    props
+        .tokens
+        .insert("background@selected".into(), t(CHROME_SELECTED));
+    props
+        .tokens
+        .insert("background@selected-hover".into(), t(CHROME_SELECTED));
+    let fixed = |px: f32| AxisConstraint {
+        min: Some(px),
+        max: Some(px),
+        priority: 0,
+    };
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(props)
+        .with_children(vec![body, mark])
+        .with_constraints(Constraints {
+            horizontal: fixed(CHROME_ICON_TAB_WIDTH),
+            vertical: fixed(DOCUMENT_TAB_HEIGHT),
+        })
+        .interactive(
+            Role::Tab,
+            label,
+            &[Interaction::Focus, Interaction::Click, Interaction::Hover],
+        )
+        .with_behaviour(Behaviour {
+            intent: Intent::Select,
+            phase: Phase::OnRelease,
+        });
+    node.semantics.selected = selected;
+    // The bar owns the bottom edge: the focus figure takes the sides.
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node
+}
+
+/// A workbench's view switcher row: flush [`chrome_icon_tab`]s on the
+/// frame, `Role::TabList`.
+pub fn chrome_icon_tab_bar(key: impl Into<Key>, tabs: Vec<ViewNode>) -> ViewNode {
+    tab_list(key, Axis::Horizontal, None, Some(CHROME_SIDE), tabs)
+}
+
+/// A workbench's document strip: flush [`document_tab`]s on the frame's
+/// `chrome.side`, `Role::TabList`, scrolling when they overflow as a
+/// contained strip does.
+pub fn document_tab_bar(key: impl Into<Key>, tabs: Vec<ViewNode>) -> ViewNode {
+    let mut bar = tab_list(key, Axis::Horizontal, None, Some(CHROME_SIDE), tabs);
+    // The hairline runs on past the last tab to the strip's end; the
+    // selected tab paints its own fill over it.
+    bar.props
+        .tokens
+        .insert("border-bottom".into(), t(CHROME_RULE));
+    bar
+}
+
 fn tab_list(
     key: impl Into<Key>,
     axis: Axis,
@@ -631,6 +841,74 @@ mod tests {
     /// narrower than its tabs clips rather than compresses them.
     fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
         petrify_lone_at(child, Size { w: 400.0, h: 200.0 })
+    }
+
+    /// A document tab is the workbench's 35, joins the working surface
+    /// when selected, and marks the selection with a top bar as well as the
+    /// fill.
+    #[test]
+    fn a_document_tab_is_35_and_joins_the_ground_when_selected() {
+        let on = document_tab("a", "field.rs", true);
+        let off = document_tab("b", "lib.rs", false);
+        for tab in [&on, &off] {
+            assert_eq!(tab.constraints.vertical.min, Some(DOCUMENT_TAB_HEIGHT));
+            assert_eq!(tab.constraints.vertical.max, Some(DOCUMENT_TAB_HEIGHT));
+            assert_eq!(
+                tab.props.tokens.get("background").map(|t| t.as_str()),
+                Some(CHROME_SIDE)
+            );
+            assert_eq!(
+                tab.props
+                    .tokens
+                    .get("background@selected")
+                    .map(|t| t.as_str()),
+                Some(CHROME_GROUND)
+            );
+        }
+        assert!(on.semantics.selected && !off.semantics.selected);
+        let bar = |tab: &ViewNode| {
+            tab.children
+                .iter()
+                .find(|c| c.key.as_str() == "indicator")
+                .and_then(|c| {
+                    c.props
+                        .tokens
+                        .get("background")
+                        .map(|t| t.as_str().to_owned())
+                })
+        };
+        assert_eq!(bar(&on).as_deref(), Some(ACCENT_PRIMARY));
+        assert_eq!(bar(&off), None);
+        assert_eq!(
+            on.props.tokens.get("border-bottom"),
+            None,
+            "the selected tab opens into the editor"
+        );
+        assert_eq!(
+            off.props.tokens.get("border-bottom").map(|t| t.as_str()),
+            Some(CHROME_RULE)
+        );
+        let strip = document_tab_bar("strip", vec![on, off]);
+        assert_eq!(
+            strip.props.tokens.get("background").map(|t| t.as_str()),
+            Some(CHROME_SIDE)
+        );
+    }
+
+    /// A switcher glyph is selected by fill, glyph ink and a bottom bar.
+    #[test]
+    fn a_chrome_icon_tab_marks_selection_with_a_bar() {
+        let on = chrome_icon_tab("e", IconMark::Document, "Explorer", true);
+        let off = chrome_icon_tab("s", IconMark::Search, "Search", false);
+        assert_eq!(on.constraints.horizontal.max, Some(CHROME_ICON_TAB_WIDTH));
+        assert_eq!(on.semantics.label.as_deref(), Some("Explorer"));
+        assert!(on.semantics.selected && !off.semantics.selected);
+        let has_bar = |tab: &ViewNode| {
+            tab.children
+                .iter()
+                .any(|c| c.key.as_str() == "indicator" && c.props.tokens.contains_key("background"))
+        };
+        assert!(has_bar(&on) && !has_bar(&off));
     }
 
     #[test]

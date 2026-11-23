@@ -205,9 +205,9 @@ use super::inline_loading::inline_loading_in_button;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_EDGE, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED,
-    ICON_DISABLED, LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SIZE_MD, SPACING_03,
-    SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR,
-    TEXT_PRIMARY, t,
+    CHROME_HOVER, CHROME_SELECTED, CHROME_SIDE, ICON_DISABLED, LAYER_ACTIVE, LAYER_HOVER,
+    LINK_PRIMARY, SHADOW_RAISED, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_BASE,
+    SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use super::{disabled, pin_block, stack};
 use crate::geom::{Align, Axis};
@@ -244,8 +244,16 @@ const _: () = assert!(HEIGHT_XL == 64.0);
 const _: () = assert!(HEIGHT_2XL == 80.0);
 const _: () = assert!(PAD_END_NO_ICON == 64.0);
 
-#[derive(Clone, Copy)]
+/// A workbench frame's control height ([`chrome_button`]): the reference
+/// editors' 22-unit status line and side bar toolbar.
+pub const CHROME_HEIGHT: f32 = 22.0;
+/// The square a [`chrome_icon_button`] takes across: a 16-unit glyph with
+/// six on each side, the reference editors' toolbar pitch.
+pub const CHROME_ICON_WIDTH: f32 = 28.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Size {
+    Chrome,
     Xs,
     Sm,
     Md,
@@ -257,6 +265,7 @@ enum Size {
 impl Size {
     fn height(self) -> f32 {
         match self {
+            Self::Chrome => CHROME_HEIGHT,
             Self::Xs => HEIGHT_XS,
             Self::Sm => HEIGHT_SM,
             Self::Md => SIZE_MD,
@@ -267,8 +276,9 @@ impl Size {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Variant {
+    Chrome,
     Primary,
     Secondary,
     Tertiary,
@@ -286,7 +296,7 @@ impl Variant {
             Self::Danger => Some("danger"),
             Self::DangerTertiary => Some("danger-tertiary"),
             Self::DangerGhost => Some("danger-ghost"),
-            Self::Primary | Self::Secondary | Self::Tertiary | Self::Ghost => None,
+            Self::Chrome | Self::Primary | Self::Secondary | Self::Tertiary | Self::Ghost => None,
         }
     }
 
@@ -304,7 +314,12 @@ impl Variant {
     fn marks_danger(self) -> bool {
         match self {
             Self::DangerTertiary | Self::DangerGhost => true,
-            Self::Danger | Self::Primary | Self::Secondary | Self::Tertiary | Self::Ghost => false,
+            Self::Chrome
+            | Self::Danger
+            | Self::Primary
+            | Self::Secondary
+            | Self::Tertiary
+            | Self::Ghost => false,
         }
     }
 }
@@ -331,6 +346,19 @@ struct Chrome {
 
 fn chrome(variant: Variant) -> Chrome {
     match variant {
+        // A workbench frame's control. Its resting fill is the frame's own,
+        // so at rest it is a word or a glyph on the side bar; the pointer
+        // lights the frame's hover fill under it. Muted ink, as the
+        // reference editors draw their toolbars and status lines.
+        Variant::Chrome => Chrome {
+            background: CHROME_SIDE,
+            foreground: TEXT_MUTED,
+            hover: Some(CHROME_HOVER),
+            active: Some(CHROME_SELECTED),
+            disabled_background: None,
+            border: None,
+            shadow: None,
+        },
         Variant::Primary => Chrome {
             background: ACCENT_PRIMARY,
             foreground: TEXT_ON_ACCENT,
@@ -550,6 +578,44 @@ pub fn ghost_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     labelled(key, label, Variant::Ghost, Size::Md)
 }
 
+/// A workbench frame's quiet text control, 22 tall: no fill of its own at
+/// rest (the frame's `chrome.side`), muted ink, `chrome.hover` under the
+/// pointer. A status line's item, a side bar toolbar's word.
+pub fn chrome_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::Chrome, Size::Chrome)
+}
+
+/// [`chrome_button`] carrying one glyph and no visible text, in a
+/// [`CHROME_ICON_WIDTH`] by [`CHROME_HEIGHT`] box. `label` is its
+/// accessible name; the glyph's shape is its only visible channel, so pick
+/// a mark that names the action (`ArrowDown` for pull, `ArrowUp` for push).
+pub fn chrome_icon_button(
+    key: impl Into<Key>,
+    mark: IconMark,
+    label: impl Into<String>,
+) -> ViewNode {
+    let key = key.into();
+    let glyph = icon_toned(format!("{}-glyph", key.as_str()), mark, IconTone::Secondary);
+    let variant = Variant::Chrome;
+    let mut node = armed(
+        key,
+        vec![glyph],
+        None,
+        label.into(),
+        variant,
+        chrome(variant),
+        Size::Chrome,
+    );
+    node.props.justify = Some(crate::tree::Justify::Center);
+    node.props.padding = None;
+    node.constraints.horizontal = crate::tree::AxisConstraint {
+        min: Some(CHROME_ICON_WIDTH),
+        max: Some(CHROME_ICON_WIDTH),
+        priority: 0,
+    };
+    node
+}
+
 /// Carbon ghost at xs 24: a quiet control for a one-line bar.
 pub fn ghost_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     labelled(key, label, Variant::Ghost, Size::Xs)
@@ -672,7 +738,15 @@ fn armed(
 ) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, spacing, children);
     node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad_inline());
+    node.props.padding = Some(if variant == Variant::Chrome {
+        InsetRefs {
+            left: Some(t(SPACING_02)),
+            right: Some(t(SPACING_02)),
+            ..InsetRefs::default()
+        }
+    } else {
+        pad_inline()
+    });
     node.props
         .tokens
         .insert("background".into(), t(chrome.background));
@@ -822,6 +896,10 @@ mod tests {
         danger_button, danger_ghost_button, danger_tertiary_button, ghost_button, loading_button,
         primary_button, tertiary_button,
     };
+    use super::{
+        CHROME_HEIGHT, CHROME_HOVER, CHROME_ICON_WIDTH, CHROME_SIDE, IconMark, chrome_button,
+        chrome_icon_button,
+    };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     // The glyph's tone. `button.rs` itself no longer names it — the mark is
     // an `IconTone` now — so the test module reaches for the token module
@@ -862,6 +940,30 @@ mod tests {
     }
 
     /// G1: default `button()` is Carbon md 40 at scale 1.0, not Carbon lg 48.
+    /// A frame control sits on the frame's own fill at rest and lights
+    /// the frame's hover fill; the glyph form is a fixed square.
+    #[test]
+    fn a_chrome_button_is_quiet_frame_furniture() {
+        let word = chrome_button("palette", "Commands");
+        assert_eq!(
+            word.props.tokens.get("background").map(|t| t.as_str()),
+            Some(CHROME_SIDE)
+        );
+        assert_eq!(
+            word.props
+                .tokens
+                .get("background@hover")
+                .map(|t| t.as_str()),
+            Some(CHROME_HOVER)
+        );
+        assert_eq!(word.constraints.vertical.max, Some(CHROME_HEIGHT));
+        assert!(!word.props.tokens.contains_key("shadow"));
+        let glyph = chrome_icon_button("pull", IconMark::ArrowDown, "Pull");
+        assert_eq!(glyph.semantics.label.as_deref(), Some("Pull"));
+        assert_eq!(glyph.constraints.horizontal.min, Some(CHROME_ICON_WIDTH));
+        assert_eq!(glyph.constraints.horizontal.max, Some(CHROME_ICON_WIDTH));
+    }
+
     #[test]
     fn default_button_height_is_carbon_md_40_at_scale_1() {
         assert_eq!(SIZE_MD, 40.0);

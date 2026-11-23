@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::draw::{ColorRef, Command, DrawList, Paint, PathVerb};
+use crate::draw::{ColorRef, Command, DrawList, Paint, PathVerb, Stroke, Width};
 use crate::geom::{Axis, Point};
 use crate::token::{CornerTokens, TokenName};
 use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, ViewNode};
@@ -223,6 +223,55 @@ pub fn caret(key: impl Into<Key>, direction: CaretDirection) -> ViewNode {
                 priority: 0,
             },
         })
+}
+
+/// The stroke width of [`chevron`]: a hairline mark, not a filled one.
+pub const CHEVRON_STROKE: f32 = 1.25;
+
+/// A thin disclosure chevron in a [`CARET_SIZE`] box: an open two-segment
+/// stroke, pointing right when closed and down when open.
+///
+/// The workbench tree's mark. [`caret`] is Carbon's solid triangle, a
+/// filled shape that carries more ink than the label beside it; a frame of
+/// quiet chrome draws the same fact as a line. Like [`caret`] it carries no
+/// semantics: the row that composes it owns `Semantics.expanded`.
+///
+/// Geometry, canvas-local: the arms span 4 units across and 8 along the
+/// pointing axis (right: `(6,4)`, `(10,8)`, `(6,12)`), centred in the box.
+///
+/// # Panics
+/// Never in practice: one three-vertex open path is inside every draw-list
+/// bound.
+pub fn chevron(key: impl Into<Key>, direction: CaretDirection) -> ViewNode {
+    let (a, b, c) = match direction {
+        CaretDirection::Down => (
+            Point::new(4.0, 6.0),
+            Point::new(8.0, 10.0),
+            Point::new(12.0, 6.0),
+        ),
+        CaretDirection::Right => (
+            Point::new(6.0, 4.0),
+            Point::new(10.0, 8.0),
+            Point::new(6.0, 12.0),
+        ),
+    };
+    let paint = Paint::stroked(Stroke {
+        width: Width::Logical(CHEVRON_STROKE),
+        color: ColorRef::Token(tokens::t(tokens::ICON_SECONDARY).as_str().to_owned()),
+    });
+    let list = DrawList::new(vec![Command::Path {
+        verbs: vec![
+            PathVerb::MoveTo(a),
+            PathVerb::LineTo(b),
+            PathVerb::LineTo(c),
+        ],
+        closed: false,
+        paint,
+    }])
+    .unwrap_or_else(|err| panic!("chevron draw list refused: {err}"));
+    let mut node = caret(key, direction);
+    node.props.canvas = Some(Arc::new(list));
+    node
 }
 
 /// Muted supporting text under a heading.

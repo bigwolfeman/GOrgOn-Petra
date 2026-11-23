@@ -87,6 +87,7 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         focus_figure: _,
         focus_shown_on: _,
         focus_run: _,
+        focus_quiet_on_press: _,
         owns_its_text: _,
         // Held out for a different reason than the two above: `behaviour`
         // and `raw_claim` are routing facts, not accessibility payload —

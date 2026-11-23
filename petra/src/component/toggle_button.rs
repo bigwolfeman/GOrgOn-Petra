@@ -45,12 +45,13 @@
 //! Until then the group gaps its children by [`SPACING_02`] so two
 //! Grouping radii do not collide.
 
+use super::button::CHROME_HEIGHT;
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
-    LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHADOW_RAISED, SIZE_MD,
-    SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
-    TYPOGRAPHY_BODY_COMPACT, t,
+    CHROME_HOVER, CHROME_SELECTED, CHROME_SIDE, LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED,
+    LAYER_SELECTED_HOVER, SHADOW_RAISED, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
+    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
@@ -85,7 +86,30 @@ fn pad_inline() -> InsetRefs {
 /// are set inside the body — there is no `toggle_button(key)` that compiles.
 #[must_use]
 pub fn toggle_button(key: impl Into<Key>, label: impl Into<String>, pressed: bool) -> ViewNode {
-    built(key, label, pressed, None)
+    built(key, label, pressed, None, Density::Carbon)
+}
+
+/// [`toggle_button`] in the workbench density, for a frame's own controls
+/// (a search view's case, word and pattern options): 22 tall, the frame's
+/// fills (`chrome.side` at rest, `chrome.hover`, `chrome.selected` when
+/// pressed), no shadow. Pressed still draws the check mark, so the state
+/// is a shape and a fill, never a fill alone.
+#[must_use]
+pub fn chrome_toggle_button(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    pressed: bool,
+) -> ViewNode {
+    built(key, label, pressed, None, Density::Chrome)
+}
+
+/// Which family of fills and metrics a toggle takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Density {
+    /// Carbon's 40-unit toggle on the raised layer.
+    Carbon,
+    /// The workbench frame's 22-unit control.
+    Chrome,
 }
 
 /// [`toggle_button`] with a leading identity icon. The label is still
@@ -97,7 +121,7 @@ pub fn toggle_button_icon(
     pressed: bool,
     mark: IconMark,
 ) -> ViewNode {
-    built(key, label, pressed, Some(mark))
+    built(key, label, pressed, Some(mark), Density::Carbon)
 }
 
 /// A horizontal stack of toggle buttons.
@@ -141,7 +165,9 @@ fn built(
     label: impl Into<String>,
     pressed: bool,
     identity: Option<IconMark>,
+    density: Density,
 ) -> ViewNode {
+    let chrome = density == Density::Chrome;
     let label = label.into();
     let mut parts = Vec::new();
     if pressed {
@@ -152,10 +178,14 @@ fn built(
     }
     let mut caption = text("label", label.clone());
     caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+    caption.props.tokens.insert(
+        "foreground".into(),
+        t(if chrome && !pressed {
+            TEXT_MUTED
+        } else {
+            TEXT_PRIMARY
+        }),
+    );
     // The label rule, not the mark fade (spec 008 FR-023 / SC-014,
     // `contracts/disabled.md`): this is text on a `surface.raised` ground,
     // and `icon-disabled` (text primary at 25 %) measures 1.31:1 on a light
@@ -174,34 +204,57 @@ fn built(
     };
     let mut node = stack(key, Axis::Horizontal, spacing, parts);
     node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad_inline());
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props
-        .tokens
-        .insert("background@hover".into(), t(LAYER_HOVER));
-    node.props
-        .tokens
-        .insert("background@active".into(), t(LAYER_ACTIVE));
+    let (fills, height) = if chrome {
+        node.props.padding = Some(InsetRefs {
+            left: Some(t(SPACING_02)),
+            right: Some(t(SPACING_02)),
+            ..InsetRefs::default()
+        });
+        (
+            [
+                CHROME_SIDE,
+                CHROME_HOVER,
+                CHROME_SELECTED,
+                CHROME_SELECTED,
+                CHROME_SELECTED,
+            ],
+            CHROME_HEIGHT,
+        )
+    } else {
+        node.props.padding = Some(pad_inline());
+        node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
+        node.props.tokens.insert(
+            "radius".into(),
+            t(corner_for(CornerRole::Grouping, SIZE_MD)),
+        );
+        (
+            [
+                SURFACE_RAISED,
+                LAYER_HOVER,
+                LAYER_ACTIVE,
+                LAYER_SELECTED,
+                LAYER_SELECTED_HOVER,
+            ],
+            SIZE_MD,
+        )
+    };
     // Selected is app-declared (`Semantics.selected`); the painter
-    // resolves `background@selected` from that flag. Resting fill stays
-    // `SURFACE_RAISED` so a tree diff of pressed vs not is the selected
+    // resolves `background@selected` from that flag. The resting fill is
+    // the same either way, so a tree diff of pressed vs not is the selected
     // slots and the Check, not a forked chrome function.
-    node.props
-        .tokens
-        .insert("background@selected".into(), t(LAYER_SELECTED));
-    node.props
-        .tokens
-        .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
-    node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
-    node.props.tokens.insert(
-        "radius".into(),
-        t(corner_for(CornerRole::Grouping, SIZE_MD)),
-    );
+    let [rest, hover, active, selected, selected_hover] = fills;
+    for (slot, fill) in [
+        ("background", rest),
+        ("background@hover", hover),
+        ("background@active", active),
+        ("background@selected", selected),
+        ("background@selected-hover", selected_hover),
+    ] {
+        node.props.tokens.insert(slot.into(), t(fill));
+    }
 
     let mut node = node
-        .with_constraints(pin_block(SIZE_MD))
+        .with_constraints(pin_block(height))
         .interactive(Role::Button, label, INTERACTIVE)
         .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text()

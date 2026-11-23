@@ -350,8 +350,10 @@ fn legible_on(ink: ColorValue, mode: ThemeMode, grounds: &[ColorValue]) -> Optio
 
 /// The grounds a code well paints on: the three surfaces it sits on, and
 /// the two [`DIFF_BANDS`] a diff row sits on.
-pub(crate) const GROUNDS: [&str; 5] = [
+pub(crate) const GROUNDS: [&str; 6] = [
     "surface.base",
+    // A workbench's text area (`crate::token::chrome`).
+    "chrome.ground",
     "surface.raised",
     "surface.layer-two",
     "diff.plus",

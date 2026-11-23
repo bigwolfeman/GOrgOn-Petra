@@ -777,6 +777,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 focus_figure: _,
                 focus_shown_on: _,
                 focus_run: _,
+                focus_quiet_on_press: _,
                 owns_its_text: _,
                 // The digest question, answered explicitly rather than by
                 // accident (`contracts/frame-identity.md`, "The rest of the
@@ -1428,6 +1429,7 @@ mod tests {
                 focus_figure: FocusFigure::Sides,
                 focus_shown_on: FocusShownOn::Well,
                 focus_run: true,
+                focus_quiet_on_press: true,
                 owns_its_text: true,
                 expanded: Some(true),
                 stale: false,

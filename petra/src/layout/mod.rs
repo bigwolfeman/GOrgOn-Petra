@@ -1463,6 +1463,7 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         focus_figure: node.semantics.focus_figure,
         focus_shown_on: node.semantics.focus_shown_on,
         focus_run: node.semantics.focus_run,
+        focus_quiet_on_press: node.semantics.focus_quiet_on_press,
         owns_its_text: node.semantics.owns_its_text,
         ambient: node.ambient,
         actions: node.interactions.clone(),

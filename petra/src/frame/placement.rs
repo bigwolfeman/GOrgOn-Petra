@@ -187,6 +187,10 @@ pub struct PlacementSemantics {
     /// ([`crate::tree::Semantics::focus_run`]). Projected and held out of the
     /// digest on the same terms as [`Self::focus_figure`].
     pub focus_run: bool,
+    /// Whether a press leaves the focus indicator hidden
+    /// ([`crate::tree::Semantics::focus_quiet_on_press`]). Projected and held
+    /// out of the digest and the semantic projection, the way `focus_run` is.
+    pub focus_quiet_on_press: bool,
     /// Whether this control owns the text inside it
     /// ([`crate::tree::Semantics::owns_its_text`]). Projected and held out of
     /// the digest and the semantic projection, the way `focus_run` is.

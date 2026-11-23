@@ -84,7 +84,7 @@ pub mod registry;
 pub mod writes;
 
 pub(crate) use kit::{
-    CARET_SIZE, CaretDirection, bind_corners, caret, pad, pin_block, stack, swatch,
+    CARET_SIZE, CaretDirection, bind_corners, caret, chevron, pad, pin_block, stack, swatch,
 };
 
 mod accordion;
@@ -171,10 +171,11 @@ pub use breadcrumb::{
     breadcrumb_overflow, breadcrumb_with_separator,
 };
 pub use button::{
-    button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
-    danger_button_xs, danger_ghost_button, danger_ghost_button_xs, danger_tertiary_button,
-    danger_tertiary_button_xs, ghost_button, ghost_button_xs, loading_button, primary_button,
-    primary_button_xs, tertiary_button, tertiary_button_xs,
+    CHROME_HEIGHT, CHROME_ICON_WIDTH, button, button_2xl, button_lg, button_sm, button_xl,
+    button_xs, chrome_button, chrome_icon_button, danger_button, danger_button_xs,
+    danger_ghost_button, danger_ghost_button_xs, danger_tertiary_button, danger_tertiary_button_xs,
+    ghost_button, ghost_button_xs, loading_button, primary_button, primary_button_xs,
+    tertiary_button, tertiary_button_xs,
 };
 pub use button_group::{button_group, button_group_flush};
 pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip, chrome_strip_xs};
@@ -316,8 +317,10 @@ pub use structured_list::{
     structured_list_sized, structured_list_weights_at,
 };
 pub use tabs::{
+    CHROME_ICON_TAB_WIDTH, DOCUMENT_TAB_HEIGHT, chrome_icon_tab, chrome_icon_tab_bar,
     contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_with_secondary,
-    contained_tab_xl, tab, tab_bar, tab_with_icon, vertical_tab, vertical_tab_bar,
+    contained_tab_xl, document_tab, document_tab_bar, tab, tab_bar, tab_with_icon, vertical_tab,
+    vertical_tab_bar,
 };
 pub use tag::{
     dismissible_tag, selectable_tag, tag, tag_lg, tag_operational, tag_sm, tag_status,
@@ -330,12 +333,15 @@ pub use textarea::{
 pub use tile::{
     clickable_tile, expandable_tile, expandable_tile_interactive, selectable_tile, tile,
 };
-pub use toggle_button::{toggle_button, toggle_button_group, toggle_button_icon};
+pub use toggle_button::{
+    chrome_toggle_button, toggle_button, toggle_button_group, toggle_button_icon,
+};
 pub use toggletip::{toggletip, toggletip_with};
 pub use tooltip::{tooltip, tooltip_anchored, tooltip_definition, tooltip_icon};
 pub use tree_view::{
+    HEIGHT_COMPACT as TREE_ROW_COMPACT, LEVEL_INDENT_COMPACT as TREE_INDENT_COMPACT,
     TreeAdornments, TreeBranch, TreeItem, TreePlace, tree_item, tree_item_xs, tree_row, tree_rows,
-    tree_rows_xs, tree_view,
+    tree_rows_compact, tree_rows_xs, tree_view,
 };
 pub use ui_shell::{
     LeftPanelMode, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,

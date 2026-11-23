@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod chrome;
 /// The red-green colour-blindness simulation lane, shared by the token
 /// gates here and the component gates in `crate::component`. Test-only.
 #[cfg(test)]
