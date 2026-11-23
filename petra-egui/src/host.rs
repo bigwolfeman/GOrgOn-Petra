@@ -3164,7 +3164,34 @@ impl<A: App> Host<A> {
                 frame,
             );
             if let Some(fired) = &fired {
-                self.app.intent(fired);
+                // A scroll's own overflow button moves that scroll; the
+                // host owns scroll offsets, so the application never hears
+                // the press (`ScrollIndicators::Buttons`).
+                let nav = (fired.intent == Intent::Activate)
+                    .then(|| {
+                        self.last_frame.as_ref().and_then(|frame| {
+                            gorgon_petra::layout::scroll::nav_step(frame, &fired.node)
+                        })
+                    })
+                    .flatten();
+                match nav {
+                    Some((scroll, step)) => {
+                        let axis = self
+                            .last_frame
+                            .as_ref()
+                            .map_or(Axis::Horizontal, |frame| frame.scroll_axis(&scroll));
+                        // `apply_scroll` takes a wheel's delta, whose sign is
+                        // the opposite of an offset's.
+                        let delta = match axis {
+                            Axis::Horizontal => Size::new(-step, 0.0),
+                            Axis::Vertical => Size::new(0.0, -step),
+                        };
+                        if self.apply_scroll(&scroll, delta) {
+                            invalidate = true;
+                        }
+                    }
+                    None => self.app.intent(fired),
+                }
             }
             // The copy chord over a selection. Here and not in the
             // application, for the reason `copy_selection` gives; an
@@ -5314,6 +5341,116 @@ mod tests {
         fn scroll_by_request(&mut self) -> Option<gorgon_petra::frame::ScrollBy> {
             self.by.take()
         }
+    }
+
+    /// A tab-like strip wider than the window under `Buttons` overflow nav,
+    /// recording every intent it hears.
+    struct Strip {
+        intents: Vec<FiredIntent>,
+    }
+
+    impl RowSource for Strip {
+        fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            Vec::new()
+        }
+    }
+
+    impl App for Strip {
+        fn view(&mut self) -> ViewNode {
+            let row = ViewNode::new(NodeKind::Spacer, "tabs").with_constraints(
+                gorgon_petra::tree::Constraints {
+                    horizontal: gorgon_petra::tree::AxisConstraint {
+                        // Wider than the headless window (10000).
+                        min: Some(30000.0),
+                        max: Some(30000.0),
+                        priority: 0,
+                    },
+                    vertical: gorgon_petra::tree::AxisConstraint {
+                        min: Some(40.0),
+                        max: Some(40.0),
+                        priority: 0,
+                    },
+                },
+            );
+            ViewNode::new(NodeKind::Scroll, "strip")
+                .with_props(Props {
+                    axis: Some(gorgon_petra::geom::Axis::Horizontal),
+                    indicators: Some(gorgon_petra::tree::ScrollIndicators::Buttons),
+                    ..Props::default()
+                })
+                .child(row)
+        }
+
+        fn handle(&mut self, _: &InputEvent, _: &Route, _: Option<&PetrifiedFrame>) {}
+
+        fn intent(&mut self, fired: &FiredIntent) {
+            self.intents.push(fired.clone());
+        }
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+    }
+
+    /// A press and release on an overflow button moves its scroll by a page
+    /// and the application never hears it; the back button then shows.
+    ///
+    /// Falsify by dropping the `nav_step` branch in `Host::pass`: the offset
+    /// stays at 0 and the application hears an `Activate`.
+    #[test]
+    fn an_overflow_button_press_scrolls_its_strip_and_is_not_an_app_intent() {
+        let (ctx, mut host) = boot(Strip {
+            intents: Vec::new(),
+        });
+        step(&ctx, &mut host, RawInput::default());
+        let forward = host
+            .frame()
+            .expect("frame")
+            .placements
+            .iter()
+            .find(|p| p.id == "/strip/scroll-forward")
+            .expect("the strip overflows, so it shows its forward button")
+            .rect;
+        let at = egui::Pos2::new(forward.x + forward.w / 2.0, forward.y + forward.h / 2.0);
+        let mut moved = RawInput::default();
+        moved.events.push(Event::PointerMoved(at));
+        step(&ctx, &mut host, moved);
+        step(&ctx, &mut host, press_at(at));
+        let mut release = RawInput::default();
+        release.events.push(Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        });
+        step(&ctx, &mut host, release);
+        step(&ctx, &mut host, RawInput::default());
+        let offset = host
+            .state()
+            .scroll_offsets
+            .get("/strip")
+            .copied()
+            .unwrap_or(0.0);
+        let port = host
+            .frame()
+            .expect("frame")
+            .placement("/strip")
+            .expect("strip")
+            .rect
+            .w;
+        assert_eq!(
+            offset,
+            port - forward.w,
+            "one page: the port less the button"
+        );
+        assert!(host.app().intents.is_empty(), "{:?}", host.app().intents);
+        assert!(
+            host.frame()
+                .expect("frame")
+                .placements
+                .iter()
+                .any(|p| p.id == "/strip/scroll-back")
+        );
     }
 
     /// An application that asks for a zoom factor.

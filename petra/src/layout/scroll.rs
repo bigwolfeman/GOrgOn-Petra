@@ -135,7 +135,12 @@ pub fn measure(
     // takes, not what its content takes: an `Exact` offer is honoured
     // exactly, `Zero` is the minimum, and only the two open probes reach for
     // the content extent just measured.
+    // A hugging scroll answers an `Exact` offer along its axis with the
+    // shorter of the offer and its content (`Props::hug_content`).
     let viewport_along = |at: Axis| match padded_proposal.axis(at) {
+        Proposal::Exact(v) if scroll.hug_content && at == axis => {
+            v.max(0.0).min(child_size.along(at))
+        }
         Proposal::Exact(v) => v.max(0.0),
         Proposal::Zero => 0.0,
         Proposal::Unbounded | Proposal::Unspecified => child_size.along(at),
@@ -147,10 +152,37 @@ pub fn measure(
     } else {
         child_size.across(axis)
     };
+    // A thumb's gutter is part of what this container takes when the offer
+    // already shows the content overflows: `place` lays the content out
+    // short of it, so an open offer that answered the content alone would
+    // squeeze the content by the gutter.
+    let automatic = scroll.indicators == ScrollIndicators::Automatic;
+    let gutters = Gutters::of(ctx, axis, padding);
+    let exact_overflow = |at: Axis| match padded_proposal.axis(at) {
+        Proposal::Exact(v) => child_size.along(at) - v.max(0.0) > SCROLL_SLACK,
+        _ => false,
+    };
+    let open = |at: Axis| {
+        matches!(
+            padded_proposal.axis(at),
+            Proposal::Unbounded | Proposal::Unspecified
+        )
+    };
+    let main_gutter = if automatic && exact_overflow(axis) && open(axis.cross()) {
+        gutters.main
+    } else {
+        0.0
+    };
+    let cross_gutter =
+        if automatic && scroll.cross_scroll && exact_overflow(axis.cross()) && open(axis) {
+            gutters.cross
+        } else {
+            0.0
+        };
     Size::from_axes(
         axis,
-        viewport_along(axis) + padding.along(axis),
-        cross_extent + padding.along(axis.cross()),
+        viewport_along(axis) + padding.along(axis) + cross_gutter,
+        cross_extent + padding.along(axis.cross()) + main_gutter,
     )
 }
 
@@ -196,42 +228,83 @@ pub fn place(
         // relative to: the padded strip is a permanent gutter the content
         // never enters, at either scroll extreme.
         let padding = ctx.padding(&node.props.padding);
-        let content = slot.rect.inset_edges(padding);
-        let viewport_size = content.size();
-
-        // Same child-proposal shape as `measure`, but the cross axis is now
-        // an `Exact` offer taken from the settled (padded) viewport rather
-        // than whatever this container's own incoming proposal happened to
-        // be: by `place` time negotiation is over and the viewport size is a
-        // fact, not one of several offers being probed.
-        let mut child_proposal =
-            SizeProposal::exact(viewport_size).with_axis(axis, Proposal::Unbounded);
-        if scroll.cross_scroll {
-            child_proposal = child_proposal.with_axis(axis.cross(), Proposal::Unbounded);
-        }
-        let frame = frame_for(node, path, SizeProposal::exact(viewport_size));
-        let content_size = ctx.within_scroll(frame.clone(), |ctx| {
-            crate::layout::measure(child, ctx, path, child_proposal)
-        });
-
-        let viewport_extent = viewport_size.along(axis);
-        // A filling scroll places its content at the longer of the viewport
-        // and the content's minimum, not at its natural length: a flexible
-        // child then takes the viewport's leftover, and a nested scroll is
-        // never handed its whole content as a viewport (`Props::fill_viewport`).
-        let content_extent = if scroll.fill_viewport {
-            let least = ctx.within_scroll(frame.clone(), |ctx| {
-                crate::layout::measure(
-                    child,
-                    ctx,
-                    path,
-                    child_proposal.with_axis(axis, Proposal::Zero),
-                )
+        let gutters = Gutters::of(ctx, axis, padding);
+        // A thumb owns a gutter along its edge: content is laid out and
+        // clipped short of it, so a thumb never draws over a line of text
+        // (`Gutters`). Which thumbs show depends on the content measured in
+        // the port the gutters leave, so the port settles in at most four
+        // rounds. A gutter, once taken, is kept for the frame (taking one
+        // only shrinks the port, which can only add overflow), except a
+        // one-axis scroll's gutter its content cannot shrink by, which is
+        // given back once and not taken again.
+        let automatic = scroll.indicators == ScrollIndicators::Automatic;
+        let (mut main_bar, mut cross_bar) = (false, false);
+        // A one-axis scroll cannot scroll across, so a gutter its content
+        // cannot shrink by (a strip of tabs as tall as the port) would cut
+        // the content off. That thumb stays over the content instead.
+        let mut main_refused = false;
+        let (content, frame, content_size, content_extent) = loop {
+            let content = slot
+                .rect
+                .inset_edges(padding)
+                .inset_edges(gutters.taken(main_bar, cross_bar));
+            let viewport_size = content.size();
+            // Same child-proposal shape as `measure`, but the cross axis is
+            // now an `Exact` offer taken from the settled (padded) viewport
+            // rather than whatever this container's own incoming proposal
+            // happened to be: by `place` time negotiation is over and the
+            // viewport size is a fact, not one of several offers being probed.
+            let mut child_proposal =
+                SizeProposal::exact(viewport_size).with_axis(axis, Proposal::Unbounded);
+            if scroll.cross_scroll {
+                child_proposal = child_proposal.with_axis(axis.cross(), Proposal::Unbounded);
+            }
+            let frame = frame_for(node, path, SizeProposal::exact(viewport_size));
+            let content_size = ctx.within_scroll(frame.clone(), |ctx| {
+                crate::layout::measure(child, ctx, path, child_proposal)
             });
-            least.along(axis).max(viewport_extent)
-        } else {
-            content_size.along(axis)
+            let viewport_extent = viewport_size.along(axis);
+            // A filling scroll places its content at the longer of the
+            // viewport and the content's minimum, not at its natural length:
+            // a flexible child then takes the viewport's leftover, and a
+            // nested scroll is never handed its whole content as a viewport
+            // (`Props::fill_viewport`).
+            let content_extent = if scroll.fill_viewport {
+                let least = ctx.within_scroll(frame.clone(), |ctx| {
+                    crate::layout::measure(
+                        child,
+                        ctx,
+                        path,
+                        child_proposal.with_axis(axis, Proposal::Zero),
+                    )
+                });
+                least.along(axis).max(viewport_extent)
+            } else {
+                content_size.along(axis)
+            };
+            let overflows = |content: f32, viewport: f32| content - viewport > SCROLL_SLACK;
+            let main_over = automatic && overflows(content_extent, viewport_extent);
+            let cross_over = automatic
+                && scroll.cross_scroll
+                && overflows(
+                    content_size.across(axis).max(viewport_size.across(axis)),
+                    viewport_size.across(axis),
+                );
+            if main_bar
+                && !scroll.cross_scroll
+                && overflows(content_size.across(axis), viewport_size.across(axis))
+            {
+                main_refused = true;
+            }
+            let next_main = (main_bar || main_over) && !main_refused;
+            let next_cross = cross_bar || cross_over;
+            if (next_main, next_cross) == (main_bar, cross_bar) {
+                break (content, frame, content_size, content_extent);
+            }
+            (main_bar, cross_bar) = (next_main, next_cross);
         };
+        let viewport_size = content.size();
+        let viewport_extent = viewport_size.along(axis);
         let max_offset = (content_extent - viewport_extent).max(0.0);
 
         // `scroll_offset` already floors a missing/negative/non-finite entry
@@ -287,12 +360,14 @@ pub fn place(
             crate::layout::place(child, ctx, path, child_slot, sink);
         });
 
-        // After the content, so it paints over it. Placed outside the
+        // After the content, in the gutters it left. Placed outside the
         // scroll context: the thumb sits on the port, it does not scroll.
-        if scroll.indicators == ScrollIndicators::Automatic
+        // Each track stops short of the other thumb's gutter, so the two
+        // thumbs never cross in the corner.
+        if automatic
             && let Some(rect) = thumb_rect(
                 ctx,
-                slot.rect,
+                gutters.track(slot.rect, axis, cross_bar),
                 axis,
                 viewport_extent,
                 content_extent,
@@ -302,12 +377,39 @@ pub fn place(
             let thumb_slot = slot.with_rect(rect).clipped_to(slot.rect);
             crate::layout::place(&INDICATOR, ctx, path, thumb_slot, sink);
         }
+        // Overflow nav: a button at each end with content past it, over the
+        // content's edge, outside the scroll context like the thumb.
+        if scroll.indicators == ScrollIndicators::Buttons
+            && max_offset > SCROLL_SLACK
+            && let Some(length) = nav_length(ctx, content, axis)
+        {
+            if offset > SCROLL_SLACK {
+                let rect = nav_rect(content, axis, length, false);
+                crate::layout::place(
+                    &NAV_BACK[axis_index(axis)],
+                    ctx,
+                    path,
+                    slot.with_rect(rect),
+                    sink,
+                );
+            }
+            if max_offset - offset > SCROLL_SLACK {
+                let rect = nav_rect(content, axis, length, true);
+                crate::layout::place(
+                    &NAV_FORWARD[axis_index(axis)],
+                    ctx,
+                    path,
+                    slot.with_rect(rect),
+                    sink,
+                );
+            }
+        }
         // The cross thumb: the same drawing, along the other edge.
         if scroll.cross_scroll
-            && scroll.indicators == ScrollIndicators::Automatic
+            && automatic
             && let Some(rect) = thumb_rect(
                 ctx,
-                slot.rect,
+                gutters.track(slot.rect, axis.cross(), main_bar),
                 axis.cross(),
                 cross_viewport,
                 cross_content,
@@ -331,6 +433,133 @@ pub const INDICATOR_KEY: &str = "scroll-indicator";
 /// The key of a two-axis `scroll`'s cross indicator. Refused as an authored
 /// child key for the reason [`INDICATOR_KEY`] is.
 pub const CROSS_INDICATOR_KEY: &str = "scroll-indicator-cross";
+
+/// The key of a [`ScrollIndicators::Buttons`] scroll's button at the
+/// leading end. Refused as an authored child key for the reason
+/// [`INDICATOR_KEY`] is; a host moves the scroll that places it back by a
+/// page when it is pressed.
+pub const NAV_BACK_KEY: &str = "scroll-back";
+
+/// The key of a [`ScrollIndicators::Buttons`] scroll's button at the
+/// trailing end. See [`NAV_BACK_KEY`].
+pub const NAV_FORWARD_KEY: &str = "scroll-forward";
+
+/// What one press of an overflow button asks of the scroll that places it:
+/// the scroll's id and the signed step along its axis, the port's visible
+/// length less the button, so the item that sat under the button is the
+/// first one shown. [`None`] when `id` is not an overflow button.
+#[must_use]
+pub fn nav_step(frame: &crate::frame::PetrifiedFrame, id: &str) -> Option<(String, f32)> {
+    let (scroll, key) = id.rsplit_once('/')?;
+    let sign = match key {
+        NAV_BACK_KEY => -1.0,
+        NAV_FORWARD_KEY => 1.0,
+        _ => return None,
+    };
+    let port = frame.placement(scroll)?;
+    if port.kind != crate::tree::NodeKind::Scroll {
+        return None;
+    }
+    let axis = frame.scroll_axis(scroll);
+    let button = frame.placement(id)?.rect.size().along(axis);
+    let page = (port.rect.size().along(axis) - button).max(button);
+    Some((scroll.to_owned(), sign * page))
+}
+
+/// An overflow button's length along the axis: Carbon's `$spacing-08`
+/// target, or [`None`] when two of them would not leave room for content.
+fn nav_length(ctx: &LayoutCtx<'_>, port: Rect, axis: Axis) -> Option<f32> {
+    let length = ctx.spacing(&Some(TokenName::new("spacing-08").expect("token name")));
+    (port.size().along(axis) > 3.0 * length).then_some(length)
+}
+
+/// Where an overflow button sits: across the whole port at its leading
+/// (`trailing` false) or trailing end.
+fn nav_rect(port: Rect, axis: Axis, length: f32, trailing: bool) -> Rect {
+    let start = if trailing {
+        origin_along(port, axis) + port.size().along(axis) - length
+    } else {
+        origin_along(port, axis)
+    };
+    match axis {
+        Axis::Horizontal => Rect::new(start, port.y, length, port.h),
+        Axis::Vertical => Rect::new(port.x, start, port.w, length),
+    }
+}
+
+const fn axis_index(axis: Axis) -> usize {
+    match axis {
+        Axis::Horizontal => 0,
+        Axis::Vertical => 1,
+    }
+}
+
+/// The leading-end buttons, horizontal then vertical, built once.
+static NAV_BACK: std::sync::LazyLock<[ViewNode; 2]> = std::sync::LazyLock::new(|| {
+    [
+        nav_button(
+            NAV_BACK_KEY,
+            crate::component::IconMark::ChevronLeft,
+            "Scroll left",
+        ),
+        nav_button(
+            NAV_BACK_KEY,
+            crate::component::IconMark::ChevronUp,
+            "Scroll up",
+        ),
+    ]
+});
+
+/// The trailing-end buttons, horizontal then vertical, built once.
+static NAV_FORWARD: std::sync::LazyLock<[ViewNode; 2]> = std::sync::LazyLock::new(|| {
+    [
+        nav_button(
+            NAV_FORWARD_KEY,
+            crate::component::IconMark::ChevronRight,
+            "Scroll right",
+        ),
+        nav_button(
+            NAV_FORWARD_KEY,
+            crate::component::IconMark::ChevronDown,
+            "Scroll down",
+        ),
+    ]
+});
+
+/// One overflow button: an opaque surface over the content's edge with the
+/// chevron centred, a button in the semantic tree, lit on hover, activated
+/// on release, and outside the focus order.
+fn nav_button(key: &str, mark: crate::component::IconMark, label: &str) -> ViewNode {
+    use crate::tree::{Behaviour, Intent, Interaction, Phase, Role};
+    let chevron =
+        crate::component::icon_toned("chevron", mark, crate::component::IconTone::Primary);
+    let mut node = ViewNode::new(crate::tree::NodeKind::Stack, key)
+        .with_props(crate::tree::Props {
+            align: Some(crate::geom::Align::Center),
+            justify: Some(crate::tree::Justify::Center),
+            ..crate::tree::Props::default()
+        })
+        .child(chevron)
+        .interactive(
+            Role::Button,
+            label,
+            &[Interaction::Click, Interaction::Hover],
+        )
+        .with_behaviour(Behaviour {
+            intent: Intent::Activate,
+            phase: Phase::OnRelease,
+        });
+    for (role, token) in [
+        ("background", "surface.base"),
+        ("background@hover", "layer-hover"),
+    ] {
+        node.props.tokens.insert(
+            role.into(),
+            TokenName::new(token).expect("a well-formed token name"),
+        );
+    }
+    node
+}
 
 /// The thumb's thickness across the axis.
 const THUMB_THICKNESS: &str = "spacing-02";
@@ -366,6 +595,86 @@ fn indicator(key: &str) -> ViewNode {
     node
 }
 
+/// Overflow under this many logical units is rounding, not content: no
+/// thumb and no gutter for it. [`thumb_rect`] uses the same slack.
+const SCROLL_SLACK: f32 = 0.5;
+
+/// The space each thumb owns along its edge: the far edge across from the
+/// scrolling axis for the main thumb (the right of a vertical scroll), the
+/// far edge along it for a two-axis scroll's cross thumb (the bottom).
+///
+/// A thumb is [`THUMB_THICKNESS`] wide with [`THUMB_INSET`] on both sides,
+/// so its gutter is the thickness plus two insets: the inset off the port's
+/// edge and the same gap again before the content. Padding on that edge
+/// already keeps content off the thumb, so it counts toward the gutter, and
+/// a scroll padded at least that much reserves nothing more.
+///
+/// An overlay thumb drew over the line under it: a code view's horizontal
+/// thumb struck through its last visible line, and its vertical thumb hid
+/// the last characters of every line at the right edge
+/// (`.agents/notes/implemented/bug-fix/2026-11-22-scroll-thumbs-own-a-gutter.md`
+/// in GOrgOn).
+#[derive(Clone, Copy, Debug)]
+struct Gutters {
+    /// The scrolling axis.
+    axis: Axis,
+    /// What the main thumb's gutter adds past the padding on its edge.
+    main: f32,
+    /// What the cross thumb's gutter adds past the padding on its edge.
+    cross: f32,
+}
+
+impl Gutters {
+    fn of(ctx: &LayoutCtx<'_>, axis: Axis, padding: crate::geom::Insets) -> Self {
+        let spacing = |name: &str| ctx.spacing(&Some(TokenName::new(name).expect("token name")));
+        let gutter = spacing(THUMB_THICKNESS) + 2.0 * spacing(THUMB_INSET);
+        // The main thumb runs along the axis on the far cross edge; the
+        // cross thumb runs across it on the far edge along it.
+        let (main_edge, cross_edge) = match axis {
+            Axis::Vertical => (padding.right, padding.bottom),
+            Axis::Horizontal => (padding.bottom, padding.right),
+        };
+        Self {
+            axis,
+            main: (gutter - main_edge).max(0.0),
+            cross: (gutter - cross_edge).max(0.0),
+        }
+    }
+
+    /// The insets the shown thumbs take from the padded port.
+    fn taken(self, main: bool, cross: bool) -> crate::geom::Insets {
+        let main = if main { self.main } else { 0.0 };
+        let cross = if cross { self.cross } else { 0.0 };
+        let (right, bottom) = match self.axis {
+            Axis::Vertical => (main, cross),
+            Axis::Horizontal => (cross, main),
+        };
+        crate::geom::Insets {
+            top: 0.0,
+            right,
+            bottom,
+            left: 0.0,
+        }
+    }
+
+    /// The port a thumb along `along` runs in: `port`, short of the other
+    /// thumb's gutter at its far end when that thumb shows.
+    fn track(self, port: Rect, along: Axis, other_shows: bool) -> Rect {
+        if !other_shows {
+            return port;
+        }
+        let other = if along == self.axis {
+            self.cross
+        } else {
+            self.main
+        };
+        match along {
+            Axis::Vertical => Rect::new(port.x, port.y, port.w, (port.h - other).max(0.0)),
+            Axis::Horizontal => Rect::new(port.x, port.y, (port.w - other).max(0.0), port.h),
+        }
+    }
+}
+
 /// Where a scroll's thumb sits, or [`None`] when the content fits.
 ///
 /// The track is the port's own rect less the inset at each end, along the
@@ -382,7 +691,7 @@ fn thumb_rect(
     offset: f32,
 ) -> Option<Rect> {
     let range = content - viewport;
-    if range <= 0.5 || !range.is_finite() {
+    if range <= SCROLL_SLACK || !range.is_finite() {
         return None;
     }
     let spacing = |name: &str| ctx.spacing(&Some(TokenName::new(name).expect("token name")));
@@ -988,15 +1297,23 @@ mod tests {
         assert_eq!(placements.len(), 3);
         assert_eq!(placements[2].id, "/list/scroll-indicator");
         let child = &placements[1];
+        // The thumb owns a 12-unit gutter on the right (4 thick, 4 off the
+        // edge, 4 before the content), so the content is 108 wide.
         assert_eq!(
             child.rect,
-            Rect::new(0.0, -40.0, 120.0, 400.0),
-            "moved by exactly -offset on the scroll axis, full content extent otherwise"
+            Rect::new(0.0, -40.0, 108.0, 400.0),
+            "moved by exactly -offset on the scroll axis, full content extent \
+             along it, the port less the thumb's gutter across it"
         );
         assert_eq!(
             child.clip,
-            Rect::new(0.0, 0.0, 120.0, 100.0),
-            "clipped to the container's own viewport rect"
+            Rect::new(0.0, 0.0, 108.0, 100.0),
+            "clipped to the viewport short of the thumb's gutter"
+        );
+        assert!(
+            placements[2].rect.x >= child.clip.x + child.clip.w,
+            "the thumb draws in its gutter, never over the content: {:?}",
+            placements[2].rect
         );
     }
 
@@ -1037,16 +1354,19 @@ mod tests {
             "padding is inside the box: the scroll's own placed rect never \
              moves or shrinks for its own padding"
         );
+        // The right padding (10) counts toward the thumb's 12-unit gutter,
+        // so the gutter takes 2 more across.
         assert_eq!(
             child.rect,
-            Rect::new(10.0, 10.0, 100.0, 400.0),
+            Rect::new(10.0, 10.0, 98.0, 400.0),
             "content keeps its full, unshrunk 400.0 extent, placed from the \
              padded (10.0, 10.0) origin — not the outer (0.0, 0.0) one"
         );
         assert_eq!(
             child.clip,
-            Rect::new(10.0, 10.0, 100.0, 80.0),
-            "the clip is the padded 100x80 viewport, not the outer 120x100 rect"
+            Rect::new(10.0, 10.0, 98.0, 80.0),
+            "the clip is the padded 98x80 viewport (less the 2 the thumb's \
+             gutter needs past the padding), not the outer 120x100 rect"
         );
     }
 
@@ -1090,7 +1410,7 @@ mod tests {
             top_rect.y, 10.0,
             "top gutter: content starts at the padded origin"
         );
-        assert_eq!(top_clip, Rect::new(10.0, 10.0, 100.0, 80.0));
+        assert_eq!(top_clip, Rect::new(10.0, 10.0, 98.0, 80.0));
 
         // Scrolled to the bottom: max_offset = content 400.0 - viewport 80.0
         // = 320.0. The content's trailing edge lands exactly on the padded
@@ -1968,8 +2288,9 @@ mod tests {
     }
 
     /// The content moves by both offsets, each clamped to its own overflow
-    /// (530 - 200 across, 400 - 100 along), and the scroll's placement names
-    /// the cross axis so the frame does not have to guess it from geometry.
+    /// in the port the two thumb gutters leave (530 - 188 across, 400 - 88
+    /// along), and the scroll's placement names the cross axis so the frame
+    /// does not have to guess it from geometry.
     #[test]
     fn a_two_axis_scroll_offsets_and_clamps_both_axes() {
         let placed = place_two_axis(40.0, 150.0);
@@ -1980,15 +2301,18 @@ mod tests {
         let clamped = place_two_axis(9_000.0, 9_000.0);
         assert_eq!(
             rect_of(&clamped, "/code/row"),
-            Rect::new(-330.0, -300.0, 530.0, 400.0)
+            Rect::new(-342.0, -312.0, 530.0, 400.0)
         );
         let scroll = placed.iter().find(|p| p.id == "/code").expect("scroll");
         assert_eq!(scroll.semantics.cross_axis, Some(Axis::Horizontal));
     }
 
     /// Both thumbs, with the same drawing: the main one on the right edge,
-    /// the cross one on the bottom, its length the visible share 200 / 530.
-    /// A one-axis scroll draws no cross thumb however wide its content.
+    /// the cross one on the bottom, its length the visible share 188 / 530
+    /// of a track that stops short of the main thumb's gutter. Each thumb
+    /// sits in its own gutter, outside the content's clip, and the two do
+    /// not cross in the corner. A one-axis scroll draws no cross thumb
+    /// however wide its content.
     #[test]
     fn a_two_axis_scroll_draws_a_thumb_on_each_axis() {
         let placed = place_two_axis(0.0, 0.0);
@@ -2003,8 +2327,17 @@ mod tests {
         assert!(main.rect.x > 190.0 && main.rect.h < 100.0);
         assert!(cross.rect.y > 90.0, "along the bottom: {:?}", cross.rect);
         assert!(
-            (cross.rect.w - 192.0 * 200.0 / 530.0).abs() < 0.01,
+            (cross.rect.w - 180.0 * 188.0 / 530.0).abs() < 0.01,
             "{:?}",
+            cross.rect
+        );
+        let row = placed.iter().find(|p| p.id == "/code/row").expect("row");
+        assert!(main.rect.x >= row.clip.x + row.clip.w, "{:?}", row.clip);
+        assert!(cross.rect.y >= row.clip.y + row.clip.h, "{:?}", row.clip);
+        assert!(
+            main.rect.y + main.rect.h <= 88.0 && cross.rect.x + cross.rect.w <= 188.0,
+            "the thumbs stop short of each other's gutter: {:?} {:?}",
+            main.rect,
             cross.rect
         );
         let mut one_axis = two_axis();
@@ -2064,6 +2397,177 @@ mod tests {
         let hit = hit_test(&frame, Point::new(10.0, 50.0), Interaction::Click);
         assert_eq!(hit.map(|p| p.id.as_str()), Some("/code/row/gutter"));
         assert_eq!(frame.scroll_axis("/code"), Axis::Vertical);
-        assert_eq!(frame.scroll_overflow("/code", Axis::Horizontal), 330.0);
+        assert_eq!(frame.scroll_overflow("/code", Axis::Horizontal), 342.0);
+    }
+
+    /// Place `tree` in a `w` by `h` port at main offset `offset` and return
+    /// every placement.
+    fn placed_at(tree: &ViewNode, w: f32, h: f32, offset: f32) -> Vec<Placement> {
+        let mut harness = Harness::new();
+        harness.set_scroll(&format!("/{}", tree.key.as_str()), offset);
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            tree,
+            &mut harness.ctx(),
+            &mut KeyPath::root(),
+            Slot::new(Rect::new(0.0, 0.0, w, h)),
+            &mut sink,
+        );
+        sink.as_slice().to_vec()
+    }
+
+    /// An open offer across a scroll whose content overflows the exact
+    /// offer along it answers the thumb's gutter too, so the content is
+    /// placed as wide as it measured and the thumb sits beside it.
+    #[test]
+    fn an_overflowing_scroll_answers_its_thumb_gutter_across() {
+        let mut h = Harness::new();
+        let tree = ViewNode::new(NodeKind::Scroll, "list").child(sized("body", 80.0, 400.0));
+        let open_across = SizeProposal {
+            horizontal: Proposal::Unspecified,
+            vertical: Proposal::Exact(100.0),
+        };
+        let size = crate::layout::measure(&tree, &mut h.ctx(), &mut KeyPath::root(), open_across);
+        assert_eq!(
+            size,
+            Size::new(92.0, 100.0),
+            "80 of content and a 12-unit gutter"
+        );
+        let fits = SizeProposal {
+            horizontal: Proposal::Unspecified,
+            vertical: Proposal::Exact(500.0),
+        };
+        let size = crate::layout::measure(&tree, &mut h.ctx(), &mut KeyPath::root(), fits);
+        assert_eq!(
+            size.w, 80.0,
+            "content that fits draws no thumb and needs no gutter"
+        );
+    }
+
+    /// A one-axis scroll whose content cannot narrow by the gutter (a strip
+    /// as tall as its port) keeps the whole port and its thumb sits over
+    /// the content, so nothing is cut off.
+    #[test]
+    fn a_gutter_the_content_cannot_give_is_not_taken() {
+        let tree = ViewNode::new(NodeKind::Scroll, "strip")
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            })
+            .child(sized("tabs", 400.0, 40.0));
+        let placed = placed_at(&tree, 120.0, 40.0, 0.0);
+        let tabs = placed.iter().find(|p| p.id == "/strip/tabs").expect("tabs");
+        assert_eq!(tabs.clip, Rect::new(0.0, 0.0, 120.0, 40.0));
+        assert!(placed.iter().any(|p| p.id.ends_with(super::INDICATOR_KEY)));
+    }
+
+    /// A `Buttons` scroll draws no thumb and a chevron button at each end
+    /// with content past it: only forward at the start, both in the middle,
+    /// only back at the end, none when the content fits. Each is a button
+    /// in the semantic tree that takes no focus.
+    #[test]
+    fn a_buttons_scroll_shows_a_button_at_each_end_with_content_past_it() {
+        let tree = |extent: f32| {
+            ViewNode::new(NodeKind::Scroll, "strip")
+                .with_props(Props {
+                    axis: Some(Axis::Horizontal),
+                    indicators: Some(crate::tree::ScrollIndicators::Buttons),
+                    ..Props::default()
+                })
+                .child(sized("tabs", extent, 40.0))
+        };
+        let ends = |placed: &[Placement]| {
+            let has = |key: &str| placed.iter().any(|p| p.id == format!("/strip/{key}"));
+            (has(super::NAV_BACK_KEY), has(super::NAV_FORWARD_KEY))
+        };
+        let start = placed_at(&tree(400.0), 200.0, 40.0, 0.0);
+        assert_eq!(ends(&start), (false, true));
+        assert!(!start.iter().any(|p| p.id.ends_with(super::INDICATOR_KEY)));
+        let forward = start
+            .iter()
+            .find(|p| p.id == "/strip/scroll-forward")
+            .expect("forward");
+        assert_eq!(forward.rect, Rect::new(160.0, 0.0, 40.0, 40.0));
+        assert_eq!(forward.semantics.role, Some(crate::tree::Role::Button));
+        assert!(
+            !forward
+                .semantics
+                .actions
+                .contains(&crate::tree::Interaction::Focus),
+            "Carbon's overflow buttons are not Tab stops"
+        );
+        assert_eq!(
+            ends(&placed_at(&tree(400.0), 200.0, 40.0, 100.0)),
+            (true, true)
+        );
+        assert_eq!(
+            ends(&placed_at(&tree(400.0), 200.0, 40.0, 200.0)),
+            (true, false)
+        );
+        assert_eq!(
+            ends(&placed_at(&tree(150.0), 200.0, 40.0, 0.0)),
+            (false, false)
+        );
+    }
+
+    /// A press on an overflow button asks for one page: the port less the
+    /// button, back or forward.
+    #[test]
+    fn an_overflow_button_steps_its_scroll_by_a_page() {
+        use crate::frame::{TransitionActivity, Viewport, petrify};
+        use crate::testing::validated;
+        use crate::token::ThemeMode;
+        let tree = ViewNode::new(NodeKind::Scroll, "strip")
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                indicators: Some(crate::tree::ScrollIndicators::Buttons),
+                ..Props::default()
+            })
+            .child(sized("tabs", 400.0, 40.0));
+        let mut h = Harness::new();
+        h.set_scroll("/strip", 100.0);
+        let frame = petrify(
+            1,
+            validated(&tree),
+            &mut h.ctx(),
+            Viewport::new(Size::new(200.0, 40.0), ThemeMode::Dark),
+            TransitionActivity::default(),
+        );
+        assert_eq!(
+            super::nav_step(&frame, "/strip/scroll-forward"),
+            Some(("/strip".to_owned(), 160.0))
+        );
+        assert_eq!(
+            super::nav_step(&frame, "/strip/scroll-back"),
+            Some(("/strip".to_owned(), -160.0))
+        );
+        assert_eq!(super::nav_step(&frame, "/strip/tabs"), None);
+    }
+
+    /// A hugging scroll offered more than its content takes only its
+    /// content; offered less, it takes the offer and scrolls.
+    #[test]
+    fn a_hugging_scroll_takes_no_more_than_its_content() {
+        let mut h = Harness::new();
+        let tree = ViewNode::new(NodeKind::Scroll, "list")
+            .with_props(Props {
+                hug_content: Some(true),
+                ..Props::default()
+            })
+            .child(sized("body", 80.0, 120.0));
+        let offer = |v: f32| SizeProposal {
+            horizontal: Proposal::Exact(200.0),
+            vertical: Proposal::Exact(v),
+        };
+        let hug = crate::layout::measure(&tree, &mut h.ctx(), &mut KeyPath::root(), offer(500.0));
+        assert_eq!(hug.h, 120.0);
+        let short = crate::layout::measure(&tree, &mut h.ctx(), &mut KeyPath::root(), offer(60.0));
+        assert_eq!(short.h, 60.0);
+        let mut plain = tree.clone();
+        plain.props.hug_content = None;
+        // A fresh harness: the cache keys a measurement by node id and offer.
+        let mut h = Harness::new();
+        let size = crate::layout::measure(&plain, &mut h.ctx(), &mut KeyPath::root(), offer(500.0));
+        assert_eq!(size.h, 500.0, "a scroll takes all it is offered by default");
     }
 }

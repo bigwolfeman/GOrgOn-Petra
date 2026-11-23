@@ -1657,6 +1657,7 @@ mod tests {
                 indicators: crate::tree::ScrollIndicators::Automatic,
                 cross_scroll: false,
                 fill_viewport: false,
+                hug_content: false,
             },
             viewport: super::SizeProposal::unspecified(),
         };

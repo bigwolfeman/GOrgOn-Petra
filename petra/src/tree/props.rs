@@ -154,6 +154,17 @@ pub enum TextWrap {
     Ellipsis,
     /// Single line, hard clip with no marker.
     Clip,
+    /// Wrap as [`TextWrap::Wrap`] does, but a box narrower than both the
+    /// run's widest word and a readable measure (ten zeros in its face,
+    /// CSS's `10ch`) shows none of it: words broken a letter or two a line
+    /// read as nothing, and a reader takes an empty box for what it is. For
+    /// text that labels a box which may be squeezed to a sliver (a
+    /// placeholder in a narrow rail seat). A box ten zeros wide wraps the
+    /// run as `Wrap` does, so one long identifier in a sentence still
+    /// breaks in a box of ordinary width rather than hiding the sentence.
+    /// The semantic label still carries the words, and the placement says
+    /// it is truncated.
+    WrapOrHide,
 }
 
 impl TextWrap {
@@ -170,6 +181,7 @@ impl TextWrap {
             Self::Wrap => "wrap",
             Self::Ellipsis => "ellipsis",
             Self::Clip => "clip",
+            Self::WrapOrHide => "wrap-or-hide",
         }
     }
 }
@@ -1029,6 +1041,15 @@ pub struct Props {
     /// whatever it seats in a scroll declares this. Absent is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_viewport: Option<bool>,
+    /// Whether a `scroll` offered more room along its axis than its content
+    /// needs takes only the content's length: CSS's `max-height:
+    /// max-content` on a scroller, Figma's "hug contents". Offered less, it
+    /// takes the offer and scrolls, as any scroll does. A short list over a
+    /// footer then sits right on the footer, with the leftover room after
+    /// both, instead of opening an empty band inside the list. Absent is
+    /// `false`: a scroll takes all it is offered, as SwiftUI's does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hug_content: Option<bool>,
     /// Keep this node at the leading edge of its enclosing two-axis
     /// `scroll`'s viewport on the cross axis while the content scrolls
     /// under it: CSS `position: sticky` on one edge. A code view's gutter
@@ -1311,6 +1332,9 @@ pub struct ScrollProps {
     /// Whether the content is at least the viewport long
     /// ([`Props::fill_viewport`]).
     pub fill_viewport: bool,
+    /// Whether the scroll takes no more than its content's length along
+    /// its axis ([`Props::hug_content`]).
+    pub hug_content: bool,
 }
 
 /// Whether a `scroll` draws an indicator: SwiftUI's `scrollIndicators`.
@@ -1328,6 +1352,14 @@ pub enum ScrollIndicators {
     /// Never draw it. For a port whose position is shown some other way,
     /// such as a list with its own position readout.
     Hidden,
+    /// Carbon's overflow nav, in place of a thumb: while the content
+    /// overflows, a chevron button at each end that has content past it.
+    /// A press moves the port by its visible length less one button. The
+    /// buttons take no focus (Carbon's are `tabindex="-1"`): the keyboard
+    /// reaches the clipped content by stepping focus into it. For a strip
+    /// of tabs, where a thumb would sit on the selected tab's underline and
+    /// a clipped label gave no sign that more lay past it.
+    Buttons,
 }
 
 /// Resolved `collection` parameters.
@@ -1477,6 +1509,7 @@ impl Props {
             indicators: self.indicators.unwrap_or_default(),
             cross_scroll: self.cross_scroll.unwrap_or(false),
             fill_viewport: self.fill_viewport.unwrap_or(false),
+            hug_content: self.hug_content.unwrap_or(false),
         }
     }
 
@@ -1661,7 +1694,12 @@ mod tests {
     /// SC-004 cross-target claim would be false with nothing to show for it.
     #[test]
     fn the_wrap_policy_has_one_name_in_the_digest_and_on_the_wire() {
-        for wrap in [TextWrap::Wrap, TextWrap::Ellipsis, TextWrap::Clip] {
+        for wrap in [
+            TextWrap::Wrap,
+            TextWrap::Ellipsis,
+            TextWrap::Clip,
+            TextWrap::WrapOrHide,
+        ] {
             let json = serde_json::to_string(&wrap).unwrap();
             assert_eq!(
                 json,

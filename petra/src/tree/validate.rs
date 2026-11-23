@@ -1001,14 +1001,17 @@ fn walk(
         check_grid_spans(node, path, errors);
     }
     let mut seen: HashSet<&Key> = HashSet::with_capacity(node.children.len());
-    // A `scroll` places its indicator as a child of its own, keyed
-    // `layout::scroll::INDICATOR_KEY`; an authored child with that key
-    // would share the id.
-    let indicator = Key::new(crate::layout::scroll::INDICATOR_KEY);
-    let cross_indicator = Key::new(crate::layout::scroll::CROSS_INDICATOR_KEY);
+    // A `scroll` places its indicators and its overflow buttons as children
+    // of its own, keyed `layout::scroll::INDICATOR_KEY` and the rest; an
+    // authored child with one of those keys would share the id.
+    let placed = [
+        Key::new(crate::layout::scroll::INDICATOR_KEY),
+        Key::new(crate::layout::scroll::CROSS_INDICATOR_KEY),
+        Key::new(crate::layout::scroll::NAV_BACK_KEY),
+        Key::new(crate::layout::scroll::NAV_FORWARD_KEY),
+    ];
     if node.kind == NodeKind::Scroll {
-        seen.insert(&indicator);
-        seen.insert(&cross_indicator);
+        seen.extend(placed.iter());
     }
     for child in &node.children {
         if !seen.insert(&child.key) {

@@ -370,7 +370,7 @@ impl ContentMeasure for MonoContent {
         }
         let chars = req.text.chars().count();
         let (lines, truncated) = match req.wrap {
-            TextWrap::Wrap => {
+            TextWrap::Wrap | TextWrap::WrapOrHide => {
                 let needed = chars.div_ceil(per_line).max(1);
                 match req.max_lines {
                     Some(cap) if needed > cap => (cap, true),
@@ -419,7 +419,7 @@ impl ContentMeasure for MonoContent {
         };
         let lines = match (req.wrap, req.available_width) {
             (_, None) | (TextWrap::Ellipsis | TextWrap::Clip, _) => 1,
-            (TextWrap::Wrap, Some(_)) => {
+            (TextWrap::Wrap | TextWrap::WrapOrHide, Some(_)) => {
                 let needed = chars.div_ceil(per_line).max(1);
                 req.max_lines.map_or(needed, |cap| needed.min(cap))
             }

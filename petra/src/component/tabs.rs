@@ -6,14 +6,13 @@
 //!
 //! A Line/Contained strip whose tabs overflow its width is Carbon's
 //! scrollable state (see [`scrollable_row`]): it clips and is reachable by
-//! wheel or Tab, never squeezes a tab under its own label. What is still
-//! missing from that state is the two overflow-nav buttons (Carbon's
-//! `ChevronLeft`/`ChevronRight`, `$spacing-08`/`09` hit targets) and their
-//! CSS-gradient edge fade — this library has no gradient primitive, and the
-//! buttons need to appear only when the strip actually overflows, which is
-//! not yet knowable at the point a `ViewNode` tree is built (before
-//! layout runs). Dismissible chrome (a close affordance per tab) is also
-//! still omitted.
+//! wheel or Tab, never squeezes a tab under its own label, and shows the
+//! two overflow-nav buttons (Carbon's `ChevronLeft`/`ChevronRight` at a
+//! `$spacing-08` target) at whichever end has tabs past it. The scroll
+//! places them at layout time, the only point at which overflow is known
+//! ([`crate::tree::ScrollIndicators::Buttons`]). Still missing: the
+//! buttons' CSS-gradient edge fade (this library has no gradient
+//! primitive) and dismissible chrome (a close affordance per tab).
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
@@ -558,10 +557,16 @@ fn tab_list(
 /// `interactions: Vec::new()`), and without it `input::hit_test` finds no
 /// placement at the pointer that accepts a wheel event — the same gap
 /// `gallery/catalog.rs`'s `index`/`main-scroll` nodes already comment on.
+///
+/// An overflowing strip shows Carbon's overflow nav
+/// ([`crate::tree::ScrollIndicators::Buttons`]): a chevron button at each
+/// end with tabs past it, and no thumb, which sat on the selected tab's
+/// underline and gave no sign that a clipped label had more past it.
 fn scrollable_row(row: ViewNode) -> ViewNode {
     ViewNode::new(NodeKind::Scroll, "viewport")
         .with_props(Props {
             axis: Some(Axis::Horizontal),
+            indicators: Some(crate::tree::ScrollIndicators::Buttons),
             ..Props::default()
         })
         .child(row)
