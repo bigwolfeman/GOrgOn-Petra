@@ -1003,6 +1003,10 @@ pub struct Host<A: App> {
     /// The application's last [`App::focus_request`] that no frame has
     /// placed yet. See [`Host::land_app_focus`].
     pending_app_focus: Option<gorgon_petra::frame::FocusTarget>,
+    /// Passes `pending_app_focus` has waited without landing. It is dropped
+    /// at [`PENDING_FOCUS_PASSES`], as a Tab target is, so a request for a
+    /// node that never comes cannot hold focus in transit for good.
+    pending_app_focus_passes: u32,
     /// Whether the primary button is down on a run a selection anchored in.
     ///
     /// The half of a selection gesture no capture can hold: a paragraph
@@ -1436,6 +1440,7 @@ impl<A: App> Host<A> {
             reveal_corrections: 0,
             reveal_wrote: None,
             pending_app_focus: None,
+            pending_app_focus_passes: 0,
             selection_drag: false,
             caret: FocusCaret::new(),
             focus_visible: true,
@@ -2065,6 +2070,7 @@ impl<A: App> Host<A> {
         let had_input = self.scroll_by_pending() || had_input;
         if let Some(target) = self.app.focus_request() {
             self.pending_app_focus = Some(target);
+            self.pending_app_focus_passes = 0;
         }
         // Before `publish_focus` below, so a target already on screen is
         // focused in the frame this pass places.
@@ -2281,7 +2287,7 @@ impl<A: App> Host<A> {
         // `ValidatedTree` is `Copy`, so a second `petrify` against the same
         // tree is the cost of re-checking, and it only runs on the rare
         // frame this reconciliation finds something to fix.
-        if self.pending_focus.is_none()
+        if !self.focus_in_flight()
             && frame
                 .placements
                 .iter()
@@ -2351,10 +2357,11 @@ impl<A: App> Host<A> {
         if let Some(p) = profile.as_mut() {
             p.paint = watch.lap();
         }
-        // A Tab scrolling toward an off-screen target leaves the old focus
-        // off screen for the passes the scroll takes. Say so in the report
-        // instead of failing the pass, and only while that Tab is in flight.
-        if self.pending_focus.is_some()
+        // A Tab or an application focus request scrolling toward an
+        // off-screen target leaves the old focus off screen for the passes
+        // the scroll takes. Say so in the report instead of failing the
+        // pass, and only while that move is in flight.
+        if self.focus_in_flight()
             && report.blind_focus > 0
             && frame
                 .placements
@@ -2405,6 +2412,13 @@ impl<A: App> Host<A> {
         // The frame just painted shows the old ring, so one more pass.
         if self.land_app_focus_on(&frame) && self.publish_focus() {
             ctx.request_repaint();
+        }
+        if self.pending_app_focus.is_some() {
+            self.pending_app_focus_passes += 1;
+            if self.pending_app_focus_passes >= PENDING_FOCUS_PASSES {
+                self.pending_app_focus = None;
+                self.pending_app_focus_passes = 0;
+            }
         }
         self.enter_open_modal(&frame, &scopes);
         self.reseat_focus_taking_surfaces(&frame, &taking, focus_before.as_deref());
@@ -3709,6 +3723,17 @@ impl<A: App> Host<A> {
         } else {
             self.pending_focus_passes = 0;
         }
+    }
+
+    /// Whether focus is on its way to another node: a Tab target, or an
+    /// application's focus request, that no frame has landed yet. While it
+    /// is, the stationary-focus reconciliation in [`Host::pass`] leaves the
+    /// old focus where it is. Scrolling the old focus back into view would
+    /// undo the scroll that brings the new target on, and a target that is
+    /// never on screen can never take focus: the two scrolls would hold each
+    /// other in place for good.
+    fn focus_in_flight(&self) -> bool {
+        self.pending_focus.is_some() || self.pending_app_focus.is_some()
     }
 
     /// Forget a deferred Tab target: focus moved by some other means.
@@ -5959,6 +5984,55 @@ mod tests {
             step(&ctx, &mut host, RawInput::default());
         }
         assert_eq!(host.focus().current(), Some("/code/rows/line-700"));
+    }
+
+    /// A focus request for a row just under the fold, with the scroll that
+    /// shows it, lands although the old focus is a row the scroll moves off
+    /// screen. The target is placed (overscan) but not visible, so it cannot
+    /// take focus until the scroll lands; the old focus, off screen after
+    /// the scroll, must not scroll itself back first.
+    ///
+    /// Falsify by dropping `pending_app_focus` from `focus_in_flight`: the
+    /// stationary-focus reconciliation scrolls line 0 back into view every
+    /// pass, the target never shows, and focus stays on line 0.
+    #[test]
+    fn a_focus_request_below_the_fold_wins_over_the_old_focus() {
+        use gorgon_petra::frame::{FocusTarget, RevealAlign, ScrollRequest};
+        let (ctx, mut host) = boot(Lines {
+            total: 1000,
+            request: None,
+            focus: None,
+        });
+        step(&ctx, &mut host, RawInput::default());
+        host.app_mut().focus = Some(FocusTarget::Row {
+            source: "lines".into(),
+            key: "line-0".into(),
+        });
+        for _ in 0..2 {
+            step(&ctx, &mut host, RawInput::default());
+        }
+        assert_eq!(host.focus().current(), Some("/code/rows/line-0"));
+        let view = host
+            .frame()
+            .and_then(|f| f.scroll_content("/code"))
+            .map(|c| c.clip.h)
+            .expect("the scroll is placed");
+        // The first row wholly under the fold.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let below = (view / 20.0).ceil() as usize + 1;
+        let key = format!("line-{below}");
+        host.app_mut().focus = Some(FocusTarget::Row {
+            source: "lines".into(),
+            key: key.clone(),
+        });
+        host.app_mut().request = Some(ScrollRequest::row("lines", below, RevealAlign::Nearest));
+        for _ in 0..4 {
+            step(&ctx, &mut host, RawInput::default());
+        }
+        assert_eq!(
+            host.focus().current(),
+            Some(format!("/code/rows/{key}").as_str())
+        );
     }
 
     /// An application asks once, before its lines exist. The request waits
