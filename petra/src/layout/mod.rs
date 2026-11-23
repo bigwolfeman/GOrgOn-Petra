@@ -53,7 +53,8 @@ pub struct TextRequest<'a> {
     /// Width the run may use, or `None` for an open probe.
     pub available_width: Option<f32>,
     /// The runs over [`TextRequest::text`], for the two things in them that
-    /// are shaping inputs: [`TextRun::weight`] and [`TextRun::italic`]. Ink,
+    /// are shaping inputs: [`TextRun::weight`], [`TextRun::italic`] and
+    /// [`TextRun::code`]. Ink,
     /// underline and band are read by the painter from the frame and never
     /// change an extent.
     pub runs: TextRuns<'a>,
@@ -86,6 +87,9 @@ pub struct RunFace {
     pub weight: Option<crate::token::TypographyWeight>,
     /// [`TextRun::italic`].
     pub italic: bool,
+    /// [`TextRun::code`]: the mono face at the code ratio, with clear space
+    /// at each end of the run.
+    pub code: bool,
 }
 
 impl RunFace {
@@ -105,16 +109,30 @@ impl TextRuns<'_> {
     pub fn faces(&self) -> Vec<(usize, RunFace)> {
         // Checked before anything is built: this runs on every measurement,
         // and almost every run list is colour only.
-        let face = |weight, italic| RunFace { weight, italic };
+        let face = |weight, italic, code| RunFace {
+            weight,
+            italic,
+            code,
+        };
         match self {
-            Self::Tree(runs) if runs.iter().any(|r| r.weight.is_some() || r.italic) => runs
-                .iter()
-                .map(|r| (r.len, face(r.weight, r.italic)))
-                .collect(),
-            Self::Frame(runs) if runs.iter().any(|r| r.weight.is_some() || r.italic) => runs
-                .iter()
-                .map(|r| (r.len, face(r.weight, r.italic)))
-                .collect(),
+            Self::Tree(runs)
+                if runs
+                    .iter()
+                    .any(|r| r.weight.is_some() || r.italic || r.code) =>
+            {
+                runs.iter()
+                    .map(|r| (r.len, face(r.weight, r.italic, r.code)))
+                    .collect()
+            }
+            Self::Frame(runs)
+                if runs
+                    .iter()
+                    .any(|r| r.weight.is_some() || r.italic || r.code) =>
+            {
+                runs.iter()
+                    .map(|r| (r.len, face(r.weight, r.italic, r.code)))
+                    .collect()
+            }
             Self::Plain | Self::Tree(_) | Self::Frame(_) => Vec::new(),
         }
     }
@@ -781,6 +799,13 @@ pub fn measure(
     }
     path.push(node.key.clone());
     let (proposal, relative) = container_relative(node, ctx, proposal);
+    let cap = char_cap(node, ctx);
+    let proposal = match (cap, proposal.horizontal) {
+        (Some(cap), Proposal::Exact(offer)) if offer > cap => {
+            proposal.with_axis(crate::geom::Axis::Horizontal, Proposal::Exact(cap))
+        }
+        _ => proposal,
+    };
     let key = ctx.key(path, proposal);
     let answer = if let Some(hit) = ctx.cache.peek(&key) {
         hit
@@ -788,6 +813,13 @@ pub fn measure(
         let mut raw = measure_kind(node, ctx, path, proposal);
         if let Some((axis, length)) = relative {
             raw = Size::from_axes(axis, length, raw.along(axis.cross()));
+        }
+        if let Some(cap) = cap {
+            raw.w = match proposal.horizontal {
+                Proposal::Exact(offer) => offer.max(0.0),
+                _ => raw.w,
+            }
+            .min(cap);
         }
         let clamped = node.constraints.clamp_size(raw).sane();
         ctx.cache.insert(key, clamped);
@@ -1197,6 +1229,7 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
                         background: run.background.as_ref().map(|n| n.as_str().to_owned()),
                         weight: run.weight,
                         italic: run.italic,
+                        code: run.code,
                     })
                     .collect()
             } else {
@@ -1291,6 +1324,27 @@ fn field_cursor(
     } else {
         (Some(to_painted(range.start)..to_painted(range.end)), None)
     }
+}
+
+/// The widest a [`Props::max_chars`](crate::tree::Props::max_chars) node may
+/// be: that many zeros of the theme's body style, measured by the shaper
+/// that measures every run, so the cap follows the body face's size.
+pub(crate) fn char_cap(node: &ViewNode, ctx: &mut LayoutCtx<'_>) -> Option<f32> {
+    let chars = node.props.max_chars?;
+    let zeros = "0".repeat(usize::from(chars));
+    Some(
+        ctx.content
+            .text(&TextRequest {
+                text: &zeros,
+                style: None,
+                wrap: TextWrap::Clip,
+                max_lines: None,
+                available_width: None,
+                runs: TextRuns::Plain,
+            })
+            .size
+            .w,
+    )
 }
 
 /// The offer a [`ContainerRelative`](crate::tree::ContainerRelative) node

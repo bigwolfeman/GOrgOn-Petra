@@ -1211,6 +1211,13 @@ fn check_semantics(node: &ViewNode, push: &mut impl FnMut(Violation)) {
 
     check_set_position(node, push);
     check_container_relative(node, push);
+    if node.props.max_chars == Some(0) {
+        push(Violation::ValueOutOfRange {
+            prop: "max_chars",
+            value: "0".to_owned(),
+            expected: "at least one character",
+        });
+    }
 
     // A status-bearing role must carry its text channel, whether or not the
     // node is interactive. The interactive check above deliberately does not
@@ -2557,6 +2564,7 @@ mod tests {
                         foreground: None,
                         weight: None,
                         italic: false,
+                        code: false,
                         link: None,
                     })
                     .collect(),

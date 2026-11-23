@@ -114,6 +114,26 @@ pub struct TextRun {
     /// Defaulted and skipped when false, so older trees parse unchanged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,
+    /// Set this stretch as inline code: Markdown's `` `code` ``, HTML's
+    /// `<code>`. Three things change, all derived from the node's own style
+    /// so a text zoom scales them with the words around them:
+    ///
+    /// * the face is the theme's monospace family, at the node's size times
+    ///   the theme's code-to-body ratio (`typography.code` over
+    ///   `typography.body`, 12 over 14 in the shipped ramp, the 85% a
+    ///   browser's user stylesheet gives `code`);
+    /// * a quarter of that size stands clear at each end, so two chips with
+    ///   only a comma between them do not touch and a chip's band does not
+    ///   sit on the letter beside it;
+    /// * [`TextRun::background`], when named, is drawn as a chip around the
+    ///   mono letters (the clear space included, the line's leading not),
+    ///   rather than as a band the full height of the line.
+    ///
+    /// A measurement input like [`TextRun::italic`]. Inside a monospace
+    /// style the face and size change nothing; the clear space still does.
+    /// Defaulted and skipped when false, so older trees parse unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code: bool,
     /// Makes this stretch a link of its own, inside the paragraph it reads in.
     ///
     /// Layout gives the stretch a placement under the text's, keyed
@@ -1242,6 +1262,21 @@ pub struct Props {
     /// `containerRelativeFrame`. See [`ContainerRelative`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_relative: Option<ContainerRelative>,
+    /// A reading column's width: the width it is offered, but never more
+    /// than this many characters, the width of that many zeros in the
+    /// theme's body style. CSS's `width: min(100%, 80ch)`. A page of text
+    /// declares it so its lines keep a readable measure in a wide window,
+    /// and because the cap is a count of the body face's characters it grows
+    /// and shrinks with the body text when the text is zoomed.
+    ///
+    /// Offered an exact width, the node answers that width or the cap,
+    /// whichever is less, however short its own lines are, so a page of
+    /// short lines is as wide as a page of long ones. A parent `stack` that
+    /// stretches it stops at the cap too, the way a declared maximum beats
+    /// [`crate::geom::Align::Stretch`]; a parent that centres its children
+    /// ([`crate::geom::Align::Center`]) centres the column. At least 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_chars: Option<u16>,
     /// Token references by paint slot (`background`, `foreground`, `border`,
     /// `radius`, …).
     ///

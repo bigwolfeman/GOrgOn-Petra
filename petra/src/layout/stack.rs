@@ -308,16 +308,25 @@ fn arrange(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, rect: R
             // not the right input: an intrinsically-sized child (an `Image`)
             // answers its own size regardless of the cross offer, and Stretch
             // must override that, not read it back.
-            Align::Stretch => child
-                .constraints
-                .axis(main.cross())
-                .clamp(cross_extent)
-                // A declared minimum bigger than the cross extent is honoured
-                // in the response (the clamp above), but placement never
-                // grows past what the parent actually has — same rule the
-                // non-Stretch arm already applies below, and `plan.taken`
-                // already flagged the loss as `truncated`.
-                .min(cross_extent),
+            Align::Stretch => {
+                let stretched = child
+                    .constraints
+                    .axis(main.cross())
+                    .clamp(cross_extent)
+                    // A declared minimum bigger than the cross extent is
+                    // honoured in the response (the clamp above), but
+                    // placement never grows past what the parent actually
+                    // has — same rule the non-Stretch arm already applies
+                    // below, and `plan.taken` already flagged the loss as
+                    // `truncated`.
+                    .min(cross_extent);
+                // A character cap is a declared maximum too (`max_chars`).
+                match main.cross() {
+                    Axis::Horizontal => crate::layout::char_cap(child, ctx)
+                        .map_or(stretched, |cap| stretched.min(cap)),
+                    Axis::Vertical => stretched,
+                }
+            }
             _ => plan.taken[i].across(main).min(cross_extent),
         };
         // On the shared line, but never pushed past the far edge: a row
@@ -1673,6 +1682,49 @@ mod tests {
         assert_eq!(placements(&tree(Align::Center), rect)[1].rect.x, 68.0);
         assert_eq!(placements(&tree(Align::End), rect)[1].rect.x, 136.0);
         assert_eq!(placements(&tree(Align::Center), rect)[1].rect.w, 64.0);
+    }
+
+    /// `Props::max_chars`: a reading column is as wide as its offer up to a
+    /// cap of that many body zeros (the fake measurer's 8 units each), however
+    /// short its own content; a centring parent centres it and a stretching
+    /// parent stops at the cap. Falsify by dropping the cap from
+    /// `layout::measure` (the centred column answers its 16-unit content) or
+    /// from the Stretch arm (the stretched column fills 200).
+    #[test]
+    fn a_char_capped_column_fills_its_offer_up_to_the_cap() {
+        let column = || {
+            let mut page = stack(
+                Axis::Vertical,
+                0.0,
+                Align::Stretch,
+                vec![
+                    ViewNode::new(NodeKind::Text, Key::new("words")).with_props(Props {
+                        text: Some("hi".into()),
+                        ..Props::default()
+                    }),
+                ],
+            );
+            page.key = Key::new("page");
+            page.props.max_chars = Some(10);
+            page
+        };
+        let rect = Rect::new(0.0, 0.0, 200.0, 64.0);
+        let centred = placements(
+            &stack(Axis::Vertical, 0.0, Align::Center, vec![column()]),
+            rect,
+        );
+        assert_eq!((centred[1].rect.x, centred[1].rect.w), (60.0, 80.0));
+        let stretched = placements(
+            &stack(Axis::Vertical, 0.0, Align::Stretch, vec![column()]),
+            rect,
+        );
+        assert_eq!((stretched[1].rect.x, stretched[1].rect.w), (0.0, 80.0));
+        let narrow = Rect::new(0.0, 0.0, 50.0, 64.0);
+        let squeezed = placements(
+            &stack(Axis::Vertical, 0.0, Align::Center, vec![column()]),
+            narrow,
+        );
+        assert_eq!(squeezed[1].rect.w, 50.0, "a narrower offer is the width");
     }
 
     /// The 2026-08-22 decision (`.agents/tallies/QUESTIONS.md` Round 3 item 2): a

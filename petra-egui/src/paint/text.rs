@@ -85,7 +85,13 @@ pub(super) fn paint_text(
                     len: run.len,
                     color: ink,
                     underline: run.underline,
-                    background: run.background.as_deref().and_then(resolve),
+                    // An inline-code run's band is its chip, drawn below
+                    // around the letters; egui's band is the full line.
+                    background: if run.code {
+                        None
+                    } else {
+                        run.background.as_deref().and_then(resolve)
+                    },
                 }
             })
             .collect();
@@ -148,6 +154,9 @@ pub(super) fn paint_text(
         // not the other way round. One rectangle per row the selection
         // crosses, from the galley about to be painted — the same galley, so
         // the highlight and the letters cannot be measured differently.
+        // Inline-code chips, behind everything else on the line: the run's
+        // own band token, around its mono letters (`TextRun::code`).
+        shapes += paint_code_chips(painter, text, &galley, text_pos, env, report);
         if let Some((range, ground, _)) = &selection {
             for band in crate::text::selection_rects(&galley, range) {
                 painter.rect_filled(band.translate(text_pos.to_vec2()), 0.0, *ground);
@@ -221,3 +230,56 @@ pub(super) fn paint_text(
 
     shapes
 }
+
+/// One chip per row behind every inline-code run of `text` that names a
+/// band ([`gorgon_petra::tree::TextRun::code`]), in the band's colour, with
+/// the small boxed mark's corner (`shape.corner-xs`). Returns the shapes
+/// painted.
+fn paint_code_chips(
+    painter: &Painter,
+    text: &gorgon_petra::frame::TextPaint,
+    galley: &egui::Galley,
+    at: egui::Pos2,
+    env: &mut PaintEnv<'_>,
+    report: &mut PaintReport,
+) -> usize {
+    if !text
+        .runs
+        .iter()
+        .any(|run| run.code && run.background.is_some())
+    {
+        return 0;
+    }
+    let style = env
+        .shaper
+        .typography()
+        .resolve(text.style.as_deref())
+        .0
+        .clone();
+    let corner = env.colors.radius(CHIP_CORNER).unwrap_or_else(|| {
+        report.unresolved_tokens.insert(CHIP_CORNER.to_owned());
+        0.0
+    });
+    let mut shapes = 0;
+    let mut start = 0usize;
+    for run in &text.runs {
+        let range = start..start + run.len;
+        start = range.end;
+        let Some(band) = run.background.as_deref().filter(|_| run.code) else {
+            continue;
+        };
+        let Some(fill) = resolve_or_record(env.colors, band, report) else {
+            continue;
+        };
+        for row in crate::text::glyph_rects(galley, &range) {
+            let chip = crate::text::code_chip(&style, row).translate(at.to_vec2());
+            painter.rect_filled(chip, corner, fill);
+            shapes += 1;
+        }
+    }
+    shapes
+}
+
+/// The corner an inline-code chip takes: the small boxed mark's
+/// (`specs/005-petra-carbon-authoring/contracts/token-vocabulary.md` §8).
+const CHIP_CORNER: &str = "shape.corner-xs";

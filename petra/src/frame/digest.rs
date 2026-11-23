@@ -414,6 +414,13 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
                     w.bool(run.italic);
                 }
             }
+            // Inline code after the slant, on the same terms.
+            if runs.iter().any(|run| run.code) {
+                w.text("code");
+                for run in runs {
+                    w.bool(run.code);
+                }
+            }
         }
         None => w.bool(false),
     }
@@ -1542,6 +1549,7 @@ mod tests {
             foreground: fg.map(ToOwned::to_owned),
             weight: None,
             italic: false,
+            code: false,
         };
 
         let plain = with(Vec::new());
@@ -1594,6 +1602,7 @@ mod tests {
             background: None,
             weight: None,
             italic: false,
+            code: false,
         };
         let plain = with(vec![run(3), run(3)]);
         let strong = with(vec![
@@ -1643,12 +1652,40 @@ mod tests {
             background: None,
             weight: None,
             italic,
+            code: false,
         };
         let upright = with(vec![run(3, false), run(3, false)]);
         let italic = with(vec![run(3, true), run(3, false)]);
         let other = with(vec![run(3, false), run(3, true)]);
         assert_ne!(upright, italic, "an italic stretch is a different picture");
         assert_ne!(italic, other, "which stretch is italic matters");
+    }
+
+    /// An inline-code run moves the paint hash, on the italic's terms.
+    /// Falsify by dropping the `code` block from `hash_paint_content`.
+    #[test]
+    fn a_code_run_moves_the_paint_hash() {
+        let with = |runs: Vec<TextRunPaint>| {
+            let mut content = rich_content();
+            if let Some(text) = content.text.as_mut() {
+                text.runs = runs;
+            }
+            hash_paint_content(&content)
+        };
+        let run = |len: usize, code: bool| TextRunPaint {
+            len,
+            foreground: None,
+            underline: false,
+            background: None,
+            weight: None,
+            italic: false,
+            code,
+        };
+        let prose = with(vec![run(3, false), run(3, false)]);
+        let code = with(vec![run(3, true), run(3, false)]);
+        let other = with(vec![run(3, false), run(3, true)]);
+        assert_ne!(prose, code, "a code stretch is a different picture");
+        assert_ne!(code, other, "which stretch is code matters");
     }
 
     /// A canvas whose numbers are all distinct and none of them round, so a

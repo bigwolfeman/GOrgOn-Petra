@@ -190,6 +190,56 @@ pub fn structured_list_condensed_sized(
     node
 }
 
+/// A read-only table inside running text, such as Markdown's: the
+/// condensed rhythm, no dividers, and two departures for a reader.
+///
+/// * **Cells wrap.** A structured list ends a long cell in an ellipsis
+///   because its columns can be dragged narrow and a scanned row keeps one
+///   height. A document's table is read, not scanned, and nothing drags its
+///   columns, so a cell that ends in "…" hides the words the table is for.
+///   Every text leaf, header included, wraps at its column instead.
+/// * **Rules are flat hairlines in `rule`.** The structured list's rules
+///   bind [`BORDER_SUBTLE`], the rule material's groove: two two-unit
+///   strokes, which under a paragraph read as a thick double band. A table
+///   in a page of text takes the page's hairline. `rule` must not be
+///   [`BORDER_SUBTLE`] itself, or the painter grooves it again.
+///
+/// `weights` share the width as [`structured_list_sized`] shares it; a
+/// caller that knows its cells (a Markdown renderer) gives a long column
+/// more of it, the way a browser's automatic table layout does.
+#[must_use]
+pub fn structured_list_document(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+    weights: &[f32],
+    rule: &str,
+) -> ViewNode {
+    let mut node = structured_list_condensed_sized(key, header, rows, weights, false);
+    for row in &mut node.children {
+        let row = Arc::make_mut(row);
+        for edge in ["border-top", "border-bottom"] {
+            if let Some(token) = row.props.tokens.get_mut(edge) {
+                *token = t(rule);
+            }
+        }
+        for cell in &mut row.children {
+            wrap_text(Arc::make_mut(cell));
+        }
+    }
+    node
+}
+
+/// Undo [`ellipsis_text`]: every text leaf under `node` wraps.
+fn wrap_text(node: &mut ViewNode) {
+    if node.kind == NodeKind::Text {
+        node.props.wrap = None;
+    }
+    for child in &mut node.children {
+        wrap_text(Arc::make_mut(child));
+    }
+}
+
 /// [`structured_list`] with the column weights and the divider policy the
 /// caller chooses.
 ///
@@ -625,6 +675,53 @@ mod tests {
 
     use crate::token::{ColorValue, Theme, TokenName, TokenValue};
     use crate::tree::{Interaction, NodeKind, Role, ViewNode};
+
+    /// A document table wraps every cell, header included, and rules its
+    /// rows in the hairline it names, never the groove. Falsify by dropping
+    /// `wrap_text` (the long cell is one ellipsised line) or the token swap.
+    #[test]
+    fn a_document_table_wraps_its_cells_and_rules_in_its_hairline() {
+        let long = "words that need more than one line in a narrow column";
+        let table = super::structured_list_document(
+            "t",
+            vec![text("h1", "Header that wraps too"), text("h2", "B")],
+            vec![
+                structured_list_row_static("r1", vec![text("a", long), text("b", "x")]),
+                structured_list_row_static("r2", vec![text("c", "y"), text("d", "z")]),
+            ],
+            &[1.0, 1.0],
+            "border-subtle-01",
+        );
+        fn walk(node: &ViewNode, visit: &mut impl FnMut(&ViewNode)) {
+            visit(node);
+            for c in &node.children {
+                walk(c, visit);
+            }
+        }
+        let mut rules = 0;
+        walk(&table, &mut |node| {
+            if node.kind == NodeKind::Text {
+                assert_eq!(node.props.wrap, None, "{} wraps", node.key.as_str());
+            }
+            for edge in ["border-top", "border-bottom"] {
+                if let Some(token) = node.props.tokens.get(edge) {
+                    assert_eq!(token.as_str(), "border-subtle-01");
+                    assert_ne!(token.as_str(), BORDER_SUBTLE);
+                    rules += 1;
+                }
+            }
+        });
+        assert_eq!(rules, 3, "a rule above each row and one under the last");
+        let frame =
+            crate::component::tests::petrify_lone_at(table, crate::geom::Size::new(240.0, 600.0));
+        let cell = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/a"))
+            .expect("the long cell");
+        assert!(cell.rect.h >= 32.0, "it wraps onto lines: {:?}", cell.rect);
+        assert!(!cell.paint.truncated, "and loses no words");
+    }
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children

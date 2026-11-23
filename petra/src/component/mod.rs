@@ -248,7 +248,7 @@ pub use input_group::{
 pub use link::{link, link_inline, link_with_icon};
 pub use list::{
     Bullet, BulletScheme, list_item, list_item_with, ordered_list, ordered_list_native,
-    unordered_list, unordered_list_with,
+    task_item_with, unordered_list, unordered_list_with,
 };
 pub use list_row::{LIST_ROW_EXTENT, list_row, list_row_with};
 pub use loading::{advance_ambient_spinners, loading, loading_sm, loading_stop, spinner_phase};
@@ -313,8 +313,8 @@ pub use slider::{
 pub use status::status;
 pub use structured_list::{
     structured_list, structured_list_condensed, structured_list_condensed_sized,
-    structured_list_placed_weights, structured_list_row, structured_list_row_static,
-    structured_list_sized, structured_list_weights_at,
+    structured_list_document, structured_list_placed_weights, structured_list_row,
+    structured_list_row_static, structured_list_sized, structured_list_weights_at,
 };
 pub use tabs::{
     CHROME_ICON_TAB_WIDTH, DOCUMENT_TAB_HEIGHT, chrome_icon_tab, chrome_icon_tab_bar,

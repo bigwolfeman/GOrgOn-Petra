@@ -182,7 +182,7 @@ fn weight_index(weight: TypographyWeight) -> usize {
 
 /// The faces a sans style's runs can switch to: its own weight, and the
 /// upright and italic family of each weight class.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RunFamilies {
     /// The style's own weight, which a run with no weight of its own keeps.
     pub own: TypographyWeight,
@@ -190,6 +190,14 @@ pub struct RunFamilies {
     pub upright: [FontFamily; 3],
     /// Italic families, same order.
     pub italic: [FontFamily; 3],
+    /// The family an inline-code run ([`gorgon_petra::tree::TextRun::code`])
+    /// draws through: the theme's monospace face.
+    pub mono: FontFamily,
+    /// An inline-code run's size over this style's size: the theme's
+    /// `typography.code` over its `typography.body`
+    /// ([`Typography::from_theme`]), so code in a heading is as much smaller
+    /// than the heading as code in a paragraph is than the paragraph.
+    pub code_scale: f32,
 }
 
 /// One typography token, resolved into what egui needs to shape it.
@@ -260,6 +268,10 @@ impl TextStyle {
                     faces.italic(TypographyWeight::Medium).clone(),
                     faces.italic(TypographyWeight::Bold).clone(),
                 ],
+                mono: faces
+                    .family(TypographyFamily::Mono, TypographyWeight::Regular)
+                    .clone(),
+                code_scale: 1.0,
             }),
             line_height: Some(value.line_height),
             extra_letter_spacing: value.letter_spacing,
@@ -271,6 +283,9 @@ impl TextStyle {
     #[must_use]
     pub fn font_at(&self, face: RunFace) -> FontId {
         match &self.faces {
+            Some(families) if face.code => {
+                FontId::new(self.font.size * families.code_scale, families.mono.clone())
+            }
             Some(families) if !face.is_plain() => {
                 let at = weight_index(face.weight.unwrap_or(families.own));
                 let family = if face.italic {
@@ -323,6 +338,10 @@ impl Typography {
     /// and this is that style's name.
     pub const BODY: &'static str = "typography.body";
 
+    /// The token code inside running text is set at, whose size over
+    /// [`Typography::BODY`]'s is an inline-code run's scale.
+    pub const CODE: &'static str = "typography.code";
+
     /// The size the fallback style takes when a theme declares no
     /// [`Typography::BODY`]. Reachable only through a theme that has no body
     /// text, which the shipped vocabulary forbids.
@@ -352,6 +371,19 @@ impl Typography {
                     name.as_str().to_owned(),
                     TextStyle::from_token(typography, faces),
                 );
+            }
+        }
+        // Inline code is the code step's share of the body step, applied to
+        // whatever style the code sits in (`RunFamilies::code_scale`). A
+        // theme missing either step sets code at its style's own size.
+        let size_of = |name: &str| styles.get(name).map(|style: &TextStyle| style.font.size);
+        if let (Some(code), Some(body)) = (size_of(Self::CODE), size_of(Self::BODY))
+            && body > 0.0
+        {
+            for style in styles.values_mut() {
+                if let Some(families) = style.faces.as_mut() {
+                    families.code_scale = code / body;
+                }
             }
         }
         let default = styles.get(Self::BODY).cloned().unwrap_or_else(|| {
@@ -807,7 +839,15 @@ impl GalleyShaper {
             // Clamped, not trusted: acceptance guarantees the tiling for an
             // accepted tree, and a shaper handed a bad one draws a short line
             // rather than panicking inside a paint pass.
+            // Inline code stands clear of its neighbours: a space before the
+            // section that opens a code run and before the one that follows
+            // it (`TextRun::code`). Space, not glyphs, so the run's bytes and
+            // its copy are the author's.
+            let clear = code_clearance(&style);
+            let mut was_code = false;
             for (range, face, ink) in sections(req.text.len(), &faces, runs) {
+                let leading_space = if face.code == was_code { 0.0 } else { clear };
+                was_code = face.code;
                 let (color, underline, background) =
                     ink.map_or((Color32::PLACEHOLDER, false, None), |run| {
                         (
@@ -817,7 +857,7 @@ impl GalleyShaper {
                         )
                     });
                 job.sections.push(egui::text::LayoutSection {
-                    leading_space: 0.0,
+                    leading_space,
                     byte_range: egui::text::ByteIndex(range.start)
                         ..egui::text::ByteIndex(range.end),
                     format: format(face, color, underline, background),
@@ -833,6 +873,91 @@ impl GalleyShaper {
         self.galleys.insert(key, Arc::clone(&galley));
         galley
     }
+}
+
+/// The space an inline-code run ([`gorgon_petra::tree::TextRun::code`])
+/// keeps clear at each end in `style`: a share of the code face's size, so
+/// it scales with the words. Its chip ([`code_chip`]) reaches most of the
+/// way into it, and the hair left over keeps the chip off the next glyph.
+#[must_use]
+pub fn code_clearance(style: &TextStyle) -> f32 {
+    style
+        .font_at(RunFace {
+            code: true,
+            ..RunFace::default()
+        })
+        .size
+        * CODE_CLEARANCE
+}
+
+/// [`code_clearance`] as a share of the code face's size.
+const CODE_CLEARANCE: f32 = 0.35;
+
+/// How far a chip reaches into its clear space, as a share of the code
+/// face's size: GitHub's `code` pads a quarter em or so at each side.
+const CODE_CHIP_REACH: f32 = 0.25;
+
+/// The chip behind an inline-code run on one row: `row_band` (the run's
+/// glyphs on the row, the full line height, from [`glyph_rects`])
+/// reaching into its clear space at each end, and one and a half times the
+/// code face's size tall, centred on the row. The
+/// line's leading stays out of it, so chips on two lines never touch.
+#[must_use]
+pub fn code_chip(style: &TextStyle, row_band: egui::Rect) -> egui::Rect {
+    let size = style
+        .font_at(RunFace {
+            code: true,
+            ..RunFace::default()
+        })
+        .size;
+    let reach = size * CODE_CHIP_REACH;
+    let height = (size * 1.5).min(row_band.height());
+    let centre = row_band.center().y;
+    egui::Rect::from_min_max(
+        egui::pos2(row_band.min.x - reach, centre - height / 2.0),
+        egui::pos2(row_band.max.x + reach, centre + height / 2.0),
+    )
+}
+
+/// The glyph boxes of byte `range` of `galley`, one per row it crosses, in
+/// galley-local coordinates: from the first glyph's left edge to the last
+/// glyph's right edge, the full height of the row.
+///
+/// Unlike [`selection_rects`], which ends a stretch where the next glyph
+/// starts (a selection is a caret span), this ends at the last glyph's own
+/// advance, so space laid out after the run is not part of its box.
+#[must_use]
+pub fn glyph_rects(galley: &Galley, range: &std::ops::Range<usize>) -> Vec<egui::Rect> {
+    if range.is_empty() {
+        return Vec::new();
+    }
+    let text = galley.text();
+    let (from, to) = (
+        byte_to_char(text, range.start),
+        byte_to_char(text, range.end),
+    );
+    let mut out = Vec::new();
+    let mut row_start = 0usize;
+    for row in &galley.rows {
+        let mut span: Option<(f32, f32)> = None;
+        for (i, glyph) in row.glyphs.iter().enumerate() {
+            let at = row_start + i;
+            if at >= from && at < to {
+                let (x0, x1) = (glyph.pos.x, glyph.pos.x + glyph.advance_width);
+                span = Some(span.map_or((x0, x1), |(a, b)| (a.min(x0), b.max(x1))));
+            }
+        }
+        if let Some((x0, x1)) = span
+            && x1 > x0
+        {
+            out.push(egui::Rect::from_min_max(
+                egui::pos2(row.pos.x + x0, row.min_y()),
+                egui::pos2(row.pos.x + x1, row.max_y()),
+            ));
+        }
+        row_start += row.char_count_including_newline().0;
+    }
+    out
 }
 
 /// The stretches of a `len`-byte string over which neither the face runs
@@ -1303,7 +1428,7 @@ impl ContentMeasure for HostedContent<'_> {
 mod tests {
     use super::{
         CustomMeasureCtx, CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent,
-        ImageSources, InkRun, TextStyle, Typography,
+        ImageSources, InkRun, TextStyle, Typography, code_chip, code_clearance, glyph_rects,
     };
     use egui::{Color32, Context, FontFamily, FontId, Galley, RawInput};
     use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextRequest};
@@ -2247,6 +2372,7 @@ mod tests {
                 background: None,
                 weight: r.weight,
                 italic: r.italic,
+                code: r.code,
             })
             .collect();
         let at = |runs| TextRequest {
@@ -2324,6 +2450,7 @@ mod tests {
                 background: None,
                 weight: r.weight,
                 italic: r.italic,
+                code: r.code,
             })
             .collect();
         let at = |runs| TextRequest {
@@ -2360,6 +2487,108 @@ mod tests {
         assert!(
             families[3].contains(crate::fonts::SANS_REGULAR_FAMILY),
             "{families:?}"
+        );
+    }
+
+    /// An inline-code run: measured and painted are one width; the stretch
+    /// draws through the mono family at the code step's share of the body
+    /// size (12 over 14 in the shipped ramp); clear space opens before it
+    /// and after it, and its chip covers its letters and reaches into that
+    /// space without touching the glyphs either side.
+    ///
+    /// Falsify by dropping `code` from `RunFace` in `TextRuns::faces` (the
+    /// stretch draws in the sans face), or the `leading_space` (the chip
+    /// overlaps its neighbours).
+    #[test]
+    fn an_inline_code_run_measures_what_it_paints_in_the_mono_face_with_clear_space() {
+        use gorgon_petra::frame::placement::TextRunPaint;
+        use gorgon_petra::layout::TextRuns;
+        use gorgon_petra::tree::TextRun;
+        let h = Headless::new();
+        crate::fonts::install_design_system(&h.0);
+        pass(&h.0);
+        let typography = Typography::from_theme(&dark(), &crate::fonts::design_system_faces());
+        let style = typography.resolve(Some("typography.body")).0.clone();
+        let mut s = h.shaper_with(typography);
+        let text = "see code, then";
+        let tree = [
+            TextRun {
+                len: 4,
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 4,
+                code: true,
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 6,
+                ..TextRun::default()
+            },
+        ];
+        let frame: Vec<TextRunPaint> = tree
+            .iter()
+            .map(|r| TextRunPaint {
+                len: r.len,
+                foreground: None,
+                underline: false,
+                background: None,
+                weight: r.weight,
+                italic: r.italic,
+                code: r.code,
+            })
+            .collect();
+        let at = |runs| TextRequest {
+            style: Some("typography.body"),
+            runs,
+            ..req(text, None, TextWrap::Wrap)
+        };
+        let measured = s.text(&at(TextRuns::Tree(&tree))).size.w;
+        let galley = s.galley_runs(&at(TextRuns::Frame(&frame)), &[]);
+        assert!(
+            (measured - galley.rect.width()).abs() < 1e-3,
+            "measured {measured} and painted {} must be one width",
+            galley.rect.width()
+        );
+        let code = &galley.job.sections[1].format.font_id;
+        assert!(
+            (code.size - 14.0 * 12.0 / 14.0).abs() < 1e-3,
+            "code is the code step's share of the body: {}",
+            code.size
+        );
+        assert_eq!(
+            code.family,
+            crate::fonts::design_system_faces()
+                .family(TypographyFamily::Mono, TypographyWeight::Regular,)
+                .clone()
+        );
+        let clear = code_clearance(&style);
+        assert!(clear > 0.0);
+        let spaces: Vec<f32> = galley
+            .job
+            .sections
+            .iter()
+            .map(|s| s.leading_space)
+            .collect();
+        assert_eq!(
+            spaces,
+            [0.0, clear, clear],
+            "space before and after the run"
+        );
+        let letters = glyph_rects(&galley, &(4..8));
+        assert_eq!(letters.len(), 1);
+        let chip = code_chip(&style, letters[0]);
+        let before = glyph_rects(&galley, &(0..4))[0];
+        let after = glyph_rects(&galley, &(8..9))[0];
+        assert!(
+            chip.min.x > before.max.x - 0.01,
+            "{chip:?} clears {before:?}"
+        );
+        assert!(chip.max.x < after.min.x + 0.01, "{chip:?} clears {after:?}");
+        assert!(chip.min.x < letters[0].min.x && chip.max.x > letters[0].max.x);
+        assert!(
+            chip.height() < letters[0].height(),
+            "the line's leading stays out"
         );
     }
 

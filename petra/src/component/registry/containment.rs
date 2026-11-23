@@ -27,12 +27,13 @@ use crate::component::{
     modal_passive, modal_sm, modal_xs, ordered_list, ordered_list_native, popover, popover_border,
     popover_caret, popover_tab, popover_with, popover_with_placement, selectable_tile,
     structured_list, structured_list_condensed, structured_list_condensed_sized,
-    structured_list_row, structured_list_row_static, structured_list_sized, tile, toggletip,
-    toggletip_with, tooltip, tooltip_anchored, tooltip_definition, tooltip_icon, tree_item,
-    tree_item_xs, tree_row, tree_rows, tree_rows_compact, tree_rows_xs, tree_view, unordered_list,
-    unordered_list_with,
+    structured_list_document, structured_list_row, structured_list_row_static,
+    structured_list_sized, task_item_with, tile, toggletip, toggletip_with, tooltip,
+    tooltip_anchored, tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_row,
+    tree_rows, tree_rows_compact, tree_rows_xs, tree_view, unordered_list, unordered_list_with,
 };
 use crate::component::{TreeAdornments, TreeBranch, TreePlace};
+use crate::token::TokenName;
 use crate::tree::{Align, Edge, Key, ViewNode};
 
 // --- one-off shapes, used only by this group -------------------------------
@@ -269,6 +270,39 @@ impl ParamShape for StructuredListParams {
 }
 
 /// `structured_list_sized` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredListDocumentParams {
+    key: Key,
+    // See `StructuredListSizedParams` for why each `Vec` takes a default.
+    #[serde(default)]
+    header: Vec<ViewNode>,
+    #[serde(default)]
+    rows: Vec<ViewNode>,
+    #[serde(default)]
+    weights: Vec<f32>,
+    rule: TokenName,
+}
+impl ParamShape for StructuredListDocumentParams {
+    const LUAU: &'static str = "{ key: string, header: { ViewNode }, rows: { ViewNode }, \
+         weights: { number }, rule: string }";
+}
+
+/// `task_item_with` — 1 constructor: [`KeyLabelNested`] plus the task's
+/// state.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskItemParams {
+    key: Key,
+    label: String,
+    done: bool,
+    #[serde(default)]
+    nested: Option<ViewNode>,
+}
+impl ParamShape for TaskItemParams {
+    const LUAU: &'static str = "{ key: string, label: string, done: boolean, nested: ViewNode? }";
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StructuredListSizedParams {
@@ -510,6 +544,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("list_item_with", KeyLabelNested, |p| list_item_with(
         p.key, p.label, p.nested
     )),
+    row!("task_item_with", TaskItemParams, |p| task_item_with(
+        p.key, p.label, p.done, p.nested
+    )),
     row!("modal", ModalParams, |p| modal(
         p.key, p.title, p.body, p.primary
     )),
@@ -568,6 +605,11 @@ pub const ENTRIES: &[Entry] = &[
         "structured_list_condensed_sized",
         StructuredListSizedParams,
         |p| structured_list_condensed_sized(p.key, p.header, p.rows, &p.weights, p.dividers)
+    ),
+    row!(
+        "structured_list_document",
+        StructuredListDocumentParams,
+        |p| structured_list_document(p.key, p.header, p.rows, &p.weights, p.rule.as_str())
     ),
     row!("structured_list_sized", StructuredListSizedParams, |p| {
         structured_list_sized(p.key, p.header, p.rows, &p.weights, p.dividers)
@@ -833,6 +875,7 @@ mod tests {
             // `semantics.value = "native"` are the difference.
             "ordered_list_native" => json!({ "key": "k-ordered", "children": [] }),
             "list_item" => json!({ "key": "k", "label": "l" }),
+            "task_item_with" => json!({ "key": "k-task", "label": "l", "done": true }),
             // `nested: null` collapses to the same tree `list_item` builds
             // (`list.rs`), so a real nested node is needed to tell the two
             // rows apart.
@@ -932,6 +975,18 @@ mod tests {
                 "rows": [{ "kind": "stack", "key": "r1" }],
                 "weights": [2.0, 1.0],
                 "dividers": false
+            }),
+            // The reading table: a hairline token and its own key tell it
+            // apart from the condensed sized list it builds on.
+            "structured_list_document" => json!({
+                "key": "k-sl-document",
+                "header": [
+                    { "kind": "stack", "key": "h1" },
+                    { "kind": "stack", "key": "h2" }
+                ],
+                "rows": [{ "kind": "stack", "key": "r1" }],
+                "weights": [3.0, 1.0],
+                "rule": "border-subtle-01"
             }),
             "structured_list_row" => json!({ "key": "k", "children": [], "selected": true }),
             "structured_list_row_static" => {

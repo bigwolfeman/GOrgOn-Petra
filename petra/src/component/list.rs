@@ -286,6 +286,63 @@ pub fn list_item_with(
     }
 }
 
+/// A task-list item, GitHub's `- [x] label`: the marker is the task's state.
+///
+/// Done draws Carbon's `CheckmarkOutline` (a tick in a ring) and open its
+/// `CircleDash` (a dashed ring), the pair a progress indicator uses for a
+/// finished and a not-started step, so the state is a shape and never a
+/// colour. `semantics.selected` says done, for a reader of the tree.
+///
+/// The marker is the task's, not the list's: a list restamps every bullet
+/// and counter by depth, and leaves a task's mark where it is. Its column is
+/// the ordered one ([`MARKER_COLUMN_ORDERED`]), because the mark is a full
+/// 16-unit icon where a bullet is a small mark inside 16, and a label set
+/// flush against the ring reads as one word.
+pub fn task_item_with(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    done: bool,
+    nested: Option<ViewNode>,
+) -> ViewNode {
+    let label = label.into();
+    let mut mark = icon_toned(
+        TASK_MARKER,
+        if done {
+            IconMark::CheckmarkOutline
+        } else {
+            IconMark::CircleDash
+        },
+        IconTone::Primary,
+    );
+    mark.props.markdown = Some(if done { "- [x]" } else { "- [ ]" }.to_owned());
+    set_column(&mut mark, MARKER_COLUMN_ORDERED);
+    let mut row = stack(
+        "row",
+        Axis::Horizontal,
+        None,
+        vec![mark, text("label", &label)],
+    );
+    row.props.align = Some(Align::FirstLine);
+    let mut item = match nested {
+        None => {
+            row.key = key.into();
+            row
+        }
+        Some(nested) => {
+            let mut item = stack(key, Axis::Vertical, None, vec![row, nested]);
+            restamp_nested(&mut item, 1, BulletScheme::default());
+            item
+        }
+    };
+    item = with_list_item_role(item, label);
+    item.semantics.selected = done;
+    item
+}
+
+/// The key of a task item's marker. Not [`set_marker`]'s `"marker"`, so a
+/// list's restamp passes it by.
+const TASK_MARKER: &str = "task";
+
 fn with_list_item_role(mut node: ViewNode, label: String) -> ViewNode {
     node.semantics = Semantics {
         role: Some(Role::ListItem),
@@ -304,10 +361,12 @@ fn item_row(key: impl Into<Key>, label: &str) -> ViewNode {
         vec![marker, text("label", label)],
     );
     // A drawn bullet is a 16-unit square and the label's line box is 20, so
-    // the two only share an optical centre line if the row centres them. A
-    // typed marker rode the label's own baseline and needed nothing; this
-    // is the one thing the picture costs.
-    row.props.align = Some(Align::Center);
+    // the two only share an optical centre line if the row lines them up.
+    // On the label's *first* line, not the row's middle: a label that wraps
+    // to three lines left a centred marker beside its second line, which
+    // reads as a bullet for the wrong sentence (operator, 2026-11-23). A
+    // marker with no text centres itself on that line (`Align::FirstLine`).
+    row.props.align = Some(Align::FirstLine);
     row
 }
 
@@ -542,7 +601,7 @@ mod tests {
         ordered_list, unordered_list, unordered_list_with,
     };
     use crate::component::icon::{IconTone, icon_toned};
-    use crate::component::tests::{assert_fits_parent, petrify_lone};
+    use crate::component::tests::{assert_fits_parent, petrify_lone, petrify_lone_at};
 
     use crate::geom::Axis;
 
@@ -571,6 +630,84 @@ mod tests {
             .iter()
             .find(|child| child.semantics.role == Some(Role::List))
             .expect("list_item_with nests a Role::List child")
+    }
+
+    /// A label that wraps keeps its marker beside its first line, not its
+    /// middle (operator, 2026-11-23: three-line items showed their dash
+    /// beside the second line). Falsify by setting the item row back to
+    /// `Align::Center`.
+    #[test]
+    fn a_wrapped_label_keeps_its_marker_on_its_first_line() {
+        let words = "word ".repeat(30);
+        for list in [
+            unordered_list("u", vec![list_item("a", words.trim())]),
+            ordered_list("o", vec![list_item("a", words.trim())]),
+            unordered_list(
+                "t",
+                vec![super::task_item_with("a", words.trim(), true, None)],
+            ),
+        ] {
+            let frame = petrify_lone_at(list, crate::geom::Size::new(200.0, 800.0));
+            let rect = |suffix: &str| {
+                frame
+                    .placements
+                    .iter()
+                    .find(|p| p.id.ends_with(suffix))
+                    .unwrap_or_else(|| panic!("no {suffix}"))
+                    .rect
+            };
+            let label = rect("/label");
+            let marker = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/marker") || p.id.ends_with("/task"))
+                .expect("a marker")
+                .rect;
+            // The fake measurer's line is 16 units tall.
+            assert!(label.h >= 48.0, "the label wraps: {label:?}");
+            let first_line = label.y + 8.0;
+            assert!(
+                (marker.y + marker.h / 2.0 - first_line).abs() < 0.5,
+                "marker {marker:?} centres on the first line of {label:?}"
+            );
+        }
+    }
+
+    /// A task item's mark is its state, and a list's restamp leaves it be.
+    #[test]
+    fn a_task_item_keeps_its_state_mark_inside_a_list() {
+        let list = unordered_list(
+            "u",
+            vec![
+                super::task_item_with("done", "Ship", true, None),
+                super::task_item_with(
+                    "open",
+                    "Test",
+                    false,
+                    Some(unordered_list("n", vec![list_item("x", "X")])),
+                ),
+                list_item("plain", "Plain"),
+            ],
+        );
+        let mark = |item: &ViewNode| -> Option<String> {
+            fn find(node: &ViewNode) -> Option<&ViewNode> {
+                if node.key.as_str() == "task" {
+                    return Some(node);
+                }
+                node.children.iter().find_map(|c| find(c))
+            }
+            find(item).and_then(|n| n.props.markdown.clone())
+        };
+        assert_eq!(mark(&list.children[0]).as_deref(), Some("- [x]"));
+        assert_eq!(mark(&list.children[1]).as_deref(), Some("- [ ]"));
+        assert_eq!(
+            mark(&list.children[2]),
+            None,
+            "a plain item keeps its bullet"
+        );
+        assert!(list.children[0].semantics.selected);
+        assert!(!list.children[1].semantics.selected);
+        assert_eq!(list.children[0].semantics.role, Some(Role::ListItem));
     }
 
     #[test]

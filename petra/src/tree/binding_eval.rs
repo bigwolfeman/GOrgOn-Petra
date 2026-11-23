@@ -1630,6 +1630,7 @@ mod tests {
             foreground: None,
             weight: None,
             italic: false,
+            code: false,
             link: None,
         }];
         let mut inputs = ResolveInputs::new();
