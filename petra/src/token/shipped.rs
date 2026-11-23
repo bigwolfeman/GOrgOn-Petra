@@ -16,8 +16,8 @@ use crate::token::name::TokenName;
 use crate::token::status::{StatusShape, StatusToken};
 use crate::token::theme::{Theme, ThemeId};
 use crate::token::value::{
-    ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue,
-    TokenKind, TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
+    BorderStyle, ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette,
+    SpringValue, TokenKind, TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
 };
 use crate::token::vocabulary::{DesignToken, Vocabulary};
 
@@ -2336,6 +2336,22 @@ const SILHOUETTE_FAMILY: [(&str, Silhouette); 4] = [
     ("shape.silhouette-octagon", Silhouette::Octagon),
 ];
 
+/// The shipped border line styles ([`BorderStyle`]): one token per style,
+/// `solid` included, for the reason `shape.silhouette-rect` is declared.
+/// A set, not a ramp.
+const BORDER_STYLE_FAMILY: [(&str, BorderStyle); 3] = [
+    ("shape.border-solid", BorderStyle::Solid),
+    ("shape.border-dashed", BorderStyle::Dashed),
+    ("shape.border-notched", BorderStyle::Notched),
+];
+
+/// Assign every [`BORDER_STYLE_FAMILY`] member into a theme's value map.
+fn insert_border_style_family(values: &mut BTreeMap<TokenName, TokenValue>) {
+    for (token, style) in BORDER_STYLE_FAMILY {
+        values.insert(name(token), TokenValue::BorderStyle(style));
+    }
+}
+
 /// Assign every [`SILHOUETTE_FAMILY`] member into a theme's value map, for
 /// the same reason [`insert_shape_ramp`] exists.
 fn insert_silhouette_family(values: &mut BTreeMap<TokenName, TokenValue>) {
@@ -2606,6 +2622,21 @@ pub fn standard_vocabulary() -> Vocabulary {
             name("shape.silhouette-octagon"),
             TokenKind::Silhouette,
         ))
+        // The border line styles: what line the `border` slot runs, so an
+        // outline can mean something without colour. See
+        // `crate::token::value::BorderStyle`.
+        .declare(DesignToken::new(
+            name("shape.border-solid"),
+            TokenKind::BorderStyle,
+        ))
+        .declare(DesignToken::new(
+            name("shape.border-dashed"),
+            TokenKind::BorderStyle,
+        ))
+        .declare(DesignToken::new(
+            name("shape.border-notched"),
+            TokenKind::BorderStyle,
+        ))
         // The keyboard focus underline (FR-015, FR-025). `focus.ring` is
         // the accent fill; `focus.ring-halo` stays in the pair because
         // `focus-inverse` and the theme builder still declare it. See
@@ -2824,6 +2855,7 @@ fn build(palette: &Palette) -> Theme {
     insert_spring_set(&mut values);
     insert_shape_ramp(&mut values);
     insert_silhouette_family(&mut values);
+    insert_border_style_family(&mut values);
 
     // The focus underline is the accent. Geometry (present vs absent) is
     // the FR-015 channel; hue is the same blue the primary button already
@@ -3743,6 +3775,34 @@ mod tests {
             declared.len(),
             expected.len()
         );
+    }
+
+    /// The border styles are geometry, not colour, so both themes hold the
+    /// same three, and the vocabulary declares exactly those.
+    #[test]
+    fn the_border_style_family_is_pinned_in_both_themes() {
+        use crate::token::value::{BorderStyle, TokenKind};
+        let expected: [(&str, BorderStyle); 3] = [
+            ("shape.border-solid", BorderStyle::Solid),
+            ("shape.border-dashed", BorderStyle::Dashed),
+            ("shape.border-notched", BorderStyle::Notched),
+        ];
+        for (label, theme) in themes() {
+            for (token, style) in expected {
+                let n = TokenName::new(token).unwrap();
+                assert_eq!(
+                    theme.value(&n),
+                    Some(&TokenValue::BorderStyle(style)),
+                    "{token} must be {style:?} in {label}"
+                );
+            }
+        }
+        let vocab = standard_vocabulary();
+        let declared = vocab
+            .names()
+            .filter(|n| vocab.kind_of(n) == Some(TokenKind::BorderStyle))
+            .count();
+        assert_eq!(declared, expected.len());
     }
 
     #[test]

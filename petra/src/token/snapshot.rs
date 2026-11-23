@@ -3,7 +3,7 @@
 use crate::token::ThemeMode;
 use crate::token::name::TokenName;
 use crate::token::theme::Theme;
-use crate::token::value::{Silhouette, SpringValue, TokenValue};
+use crate::token::value::{BorderStyle, Silhouette, SpringValue, TokenValue};
 
 /// An immutable resolution of one [`Theme`] at one revision.
 ///
@@ -106,6 +106,18 @@ impl ThemeSnapshot {
     pub fn silhouette(&self, name: &TokenName) -> Option<Silhouette> {
         match self.value(name)? {
             TokenValue::Silhouette(figure) => Some(*figure),
+            _ => None,
+        }
+    }
+
+    /// The border line style `name` resolves to. `None` when the theme has
+    /// no such token, and `None`, never a silent [`BorderStyle::Solid`],
+    /// when it has one at another kind, for the reason
+    /// [`ThemeSnapshot::silhouette`] gives.
+    #[must_use]
+    pub fn border_style(&self, name: &TokenName) -> Option<BorderStyle> {
+        match self.value(name)? {
+            TokenValue::BorderStyle(style) => Some(*style),
             _ => None,
         }
     }

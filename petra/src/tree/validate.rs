@@ -647,6 +647,7 @@ fn kind_word(kind: TokenKind) -> &'static str {
         TokenKind::Spring => "spring",
         TokenKind::Shape => "shape",
         TokenKind::Silhouette => "silhouette",
+        TokenKind::BorderStyle => "border-style",
         TokenKind::Coverage => "coverage",
     }
 }

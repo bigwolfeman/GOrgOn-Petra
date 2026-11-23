@@ -34,6 +34,10 @@ pub enum TokenKind {
     Shape,
     /// An outline family: which closed figure a slot's rect is drawn as.
     Silhouette,
+    /// How the `border` slot's line runs: solid, dashed, or with notched
+    /// corners. See [`BorderStyle`].
+    #[serde(rename = "border-style")]
+    BorderStyle,
     /// How many times a glyph's coverage is composited against itself —
     /// the sharpness of rendered text. See [`CoverageValue`].
     Coverage,
@@ -438,6 +442,32 @@ pub enum Silhouette {
     Octagon,
 }
 
+/// How the four-sided `border` slot's line runs around a node.
+///
+/// A separate token kind for the same reason [`Silhouette`] is one: a
+/// colour says *what ink* the outline is, this says *what line*. The two
+/// bind separately, so one `border.strong` serves every style.
+///
+/// It exists so an outline can carry a meaning without colour (the
+/// operator is red-green colour blind, and FR-015 forbids colour as the
+/// only channel). Three lines stay separable from each other at chip size:
+/// an unbroken line, a broken one, and an unbroken one whose corners are
+/// cut. The engine names the line; a renderer decides the dash and the cut.
+/// Only the four-sided `border` slot reads it; a one-side rule
+/// (`border-top` and its siblings) stays a solid strip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BorderStyle {
+    /// One unbroken line: the outline every node drew before this kind.
+    #[default]
+    Solid,
+    /// A broken line: dashes with gaps between them, on every side.
+    Dashed,
+    /// One unbroken line whose four corners are cut on a short diagonal:
+    /// a ticket's outline. On a rect only; a silhouette keeps its figure.
+    Notched,
+}
+
 /// A resolved token value. Exactly one variant per [`TokenKind`]; the two
 /// enums are kept in lock-step by [`TokenValue::kind`], which
 /// [`crate::token::theme::Theme::build`] uses to refuse a value assigned at
@@ -459,6 +489,9 @@ pub enum TokenValue {
     Shape(ShapeValue),
     /// An outline family.
     Silhouette(Silhouette),
+    /// A border line style.
+    #[serde(rename = "border-style")]
+    BorderStyle(BorderStyle),
     /// A glyph coverage compositing curve.
     Coverage(CoverageValue),
 }
@@ -475,6 +508,7 @@ impl TokenValue {
             Self::Spring(_) => TokenKind::Spring,
             Self::Shape(_) => TokenKind::Shape,
             Self::Silhouette(_) => TokenKind::Silhouette,
+            Self::BorderStyle(_) => TokenKind::BorderStyle,
             Self::Coverage(_) => TokenKind::Coverage,
         }
     }
@@ -483,8 +517,8 @@ impl TokenValue {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind,
-        TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
+        BorderStyle, ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette,
+        TokenKind, TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
     };
 
     #[test]
@@ -520,6 +554,10 @@ mod tests {
         assert_eq!(
             TokenValue::Silhouette(Silhouette::Triangle).kind(),
             TokenKind::Silhouette
+        );
+        assert_eq!(
+            TokenValue::BorderStyle(BorderStyle::Dashed).kind(),
+            TokenKind::BorderStyle
         );
         assert_eq!(
             TokenValue::Coverage(CoverageValue {
@@ -569,6 +607,32 @@ mod tests {
                 serde_json::from_str(wire).expect("the pinned wire form decodes");
             assert_eq!(decoded, variant);
         }
+    }
+
+    /// The border style, its kind, and its value share one kebab-case wire
+    /// form, so a theme file names them the way it names a slot.
+    #[test]
+    fn border_style_round_trips_through_its_kebab_case_wire_form() {
+        for (variant, wire) in [
+            (BorderStyle::Solid, "\"solid\""),
+            (BorderStyle::Dashed, "\"dashed\""),
+            (BorderStyle::Notched, "\"notched\""),
+        ] {
+            let encoded = serde_json::to_string(&variant).expect("a unit variant serializes");
+            assert_eq!(encoded, wire, "{variant:?} changed its wire spelling");
+            let decoded: BorderStyle =
+                serde_json::from_str(wire).expect("the pinned wire form decodes");
+            assert_eq!(decoded, variant);
+        }
+        assert_eq!(
+            serde_json::to_string(&TokenKind::BorderStyle).unwrap(),
+            "\"border-style\""
+        );
+        let value = TokenValue::BorderStyle(BorderStyle::Notched);
+        let text = serde_json::to_string(&value).unwrap();
+        assert_eq!(text, r#"{"kind":"border-style","value":"notched"}"#);
+        assert_eq!(serde_json::from_str::<TokenValue>(&text).unwrap(), value);
+        assert_eq!(BorderStyle::default(), BorderStyle::Solid);
     }
 
     /// A slot that binds no silhouette gets the figure every node had

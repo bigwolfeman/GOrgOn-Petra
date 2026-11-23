@@ -326,6 +326,7 @@ pub fn standard_slots() -> SlotSchema {
         ))
         .declare(SlotSpec::new("radius-bottom-left", TokenKind::Shape, false))
         .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false))
+        .declare(SlotSpec::new("border-style", TokenKind::BorderStyle, false))
         .declare(SlotSpec::new("selection", TokenKind::Color, false))
         .declare(SlotSpec::new("selection-ink", TokenKind::Color, false));
     s
@@ -336,7 +337,7 @@ mod tests {
     use super::{SlotSpec, standard_slots};
     use crate::token::value::TokenKind;
 
-    /// The shipped schema is exactly the seventeen slots the painter draws,
+    /// The shipped schema is exactly the eighteen slots the painter draws,
     /// at the kinds it draws them.
     ///
     /// The count is the load-bearing assertion, not the membership list. This
@@ -368,6 +369,7 @@ mod tests {
             ("radius-bottom-right", TokenKind::Shape),
             ("radius-bottom-left", TokenKind::Shape),
             ("silhouette", TokenKind::Silhouette),
+            ("border-style", TokenKind::BorderStyle),
             ("selection", TokenKind::Color),
             ("selection-ink", TokenKind::Color),
         ];

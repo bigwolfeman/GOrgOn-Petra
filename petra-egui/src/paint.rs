@@ -28,8 +28,9 @@ use gorgon_petra::frame::{PaintContent, PaintStep, PetrifiedFrame, Placement, ro
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
-    DerivedState, FocusRing, InteractionRank, MotionValue, SHADOW_GEOMETRY, Silhouette,
-    ThemeSnapshot, TokenName, TokenValue, TypographyValue, base_slot, resolve_slot, resolve_state,
+    BorderStyle, DerivedState, FocusRing, InteractionRank, MotionValue, SHADOW_GEOMETRY,
+    Silhouette, ThemeSnapshot, TokenName, TokenValue, TypographyValue, base_slot, resolve_slot,
+    resolve_state,
 };
 use gorgon_petra::tree::{Edge, FocusFigure, FocusShownOn, NodeKind};
 
@@ -100,6 +101,12 @@ pub const RADIUS_BOTTOM_LEFT_SLOT: &str = "radius-bottom-left";
 /// meaning must never rest on colour alone, and that shape channel was not
 /// reaching the screen.
 pub const SILHOUETTE_SLOT: &str = "silhouette";
+/// Token slot naming how the four-sided [`BORDER_SLOT`] line runs
+/// ([`BorderStyle`]): solid, dashed, or with notched corners. Unbound is
+/// solid, the line every border drew before this slot. It shapes the
+/// border only: a node with no `border` binding draws no line, and the one
+/// edge slots ([`BORDER_TOP_SLOT`] and its siblings) stay solid strips.
+pub const BORDER_STYLE_SLOT: &str = "border-style";
 
 /// Token consulted for the elevation shadow cast behind a node's fill.
 ///
@@ -183,6 +190,7 @@ const KNOWN_SLOTS: &[&str] = &[
     RADIUS_BOTTOM_LEFT_SLOT,
     SHADOW_SLOT,
     SILHOUETTE_SLOT,
+    BORDER_STYLE_SLOT,
     SELECTION_SLOT,
     SELECTION_INK_SLOT,
 ];
@@ -242,6 +250,15 @@ pub trait TokenSource {
     fn silhouette(&self, token: &str) -> Option<Silhouette> {
         match self.value(token)? {
             TokenValue::Silhouette(figure) => Some(*figure),
+            _ => None,
+        }
+    }
+
+    /// The border line style `token` resolves to, or `None` when the source
+    /// has no such style.
+    fn border_style(&self, token: &str) -> Option<BorderStyle> {
+        match self.value(token)? {
+            TokenValue::BorderStyle(style) => Some(*style),
             _ => None,
         }
     }
@@ -330,6 +347,11 @@ impl TokenSource for ThemeSnapshot {
     fn silhouette(&self, token: &str) -> Option<Silhouette> {
         let name = TokenName::new(token).ok()?;
         ThemeSnapshot::silhouette(self, &name)
+    }
+
+    fn border_style(&self, token: &str) -> Option<BorderStyle> {
+        let name = TokenName::new(token).ok()?;
+        ThemeSnapshot::border_style(self, &name)
     }
 
     fn spacing(&self, token: &str) -> Option<f32> {
@@ -1973,6 +1995,9 @@ struct NodeChrome {
     /// The closed outline the silhouette traces inside `rect`, or `None` for
     /// [`Silhouette::Rect`] — which stays egui's own rounded rect.
     outline: Option<Vec<egui::Pos2>>,
+    /// How the four-sided border line runs. An unbound or unresolved
+    /// `border-style` is [`BorderStyle::Solid`]; the miss is reported.
+    border_style: BorderStyle,
 }
 
 impl NodeChrome {
@@ -1991,12 +2016,23 @@ impl NodeChrome {
                 resolve_silhouette_or_record(env.colors, token, report)
             });
         let outline = silhouette_points(figure, rect);
+        let border_style = resolve_slot(&content.tokens, BORDER_STYLE_SLOT, state).map_or(
+            BorderStyle::Solid,
+            |token| {
+                let style = env.colors.border_style(token);
+                if style.is_none() {
+                    report.unresolved_tokens.insert(token.to_owned());
+                }
+                style.unwrap_or_default()
+            },
+        );
         Self {
             rect,
             state,
             rank,
             corner_radius,
             outline,
+            border_style,
         }
     }
 }
@@ -3371,6 +3407,93 @@ mod tests {
     /// was written for: it is a state/control-boundary tone the contract
     /// keeps flat on purpose (checkbox, radio, toggle track, field rule),
     /// never a rule.
+    /// The shapes one bordered box paints under `style` (unbound when
+    /// `None`), and the paint report.
+    fn bordered_box(style: Option<&str>) -> (Vec<Shape>, super::PaintReport, egui::Rect) {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props.tokens.insert("border".into(), tok("border-strong"));
+        if let Some(style) = style {
+            props.tokens.insert("border-style".into(), tok(style));
+        }
+        let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+        let frame = petrify(
+            1,
+            validated(&node),
+            &mut h.ctx(),
+            Viewport::new(Size::new(60.0, 20.0), ThemeMode::Dark),
+            TransitionActivity::default(),
+        );
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let shapes = out.shapes.iter().map(|cs| cs.shape.clone()).collect();
+        out.drop_without_applying_deltas();
+        let rect = to_egui_snapped(frame.placements[0].rect, Scale::ONE);
+        (shapes, report, rect)
+    }
+
+    /// `border-style` changes the line the four-sided border runs: solid is
+    /// the one rect stroke every border drew before the slot, dashed is many
+    /// short segments with gaps, notched is one closed path of eight points
+    /// whose corners are cut. (Tree acceptance refuses a style token the
+    /// vocabulary does not declare, so a misspelt one never reaches here.)
+    #[test]
+    fn border_style_draws_a_solid_a_dashed_or_a_notched_line() {
+        let (solid, report, _) = bordered_box(Some("shape.border-solid"));
+        assert!(report.unknown_slots.is_empty() && report.unresolved_tokens.is_empty());
+        let unbound = bordered_box(None).0;
+        assert_eq!(solid, unbound, "solid is the border without the slot");
+        assert_eq!(
+            solid
+                .iter()
+                .filter(|s| matches!(s, Shape::Rect(r) if r.stroke.width > 0.0))
+                .count(),
+            1
+        );
+
+        let (dashed, report, rect) = bordered_box(Some("shape.border-dashed"));
+        assert!(report.unknown_slots.is_empty() && report.unresolved_tokens.is_empty());
+        let segments: Vec<[egui::Pos2; 2]> = dashed
+            .iter()
+            .filter_map(|s| match s {
+                Shape::LineSegment { points, .. } => Some(*points),
+                _ => None,
+            })
+            .collect();
+        // A 60x20 perimeter is 160 units: a dash and a gap is five.
+        assert!(segments.len() > 20, "{} dashes", segments.len());
+        let inked: f32 = segments.iter().map(|[a, b]| a.distance(*b)).sum();
+        let perimeter = 2.0 * (rect.width() + rect.height());
+        assert!(
+            inked < perimeter * 0.75,
+            "a dashed line leaves gaps: {inked} of {perimeter}"
+        );
+        assert!(
+            !dashed
+                .iter()
+                .any(|s| matches!(s, Shape::Rect(r) if r.stroke.width > 0.0)),
+            "a dashed border paints no solid box"
+        );
+
+        let (notched, report, rect) = bordered_box(Some("shape.border-notched"));
+        assert!(report.unknown_slots.is_empty() && report.unresolved_tokens.is_empty());
+        let path = notched
+            .iter()
+            .find_map(|s| match s {
+                Shape::Path(p) if p.closed && p.stroke.width > 0.0 => Some(p.points.clone()),
+                _ => None,
+            })
+            .expect("a notched border is one closed path");
+        assert_eq!(path.len(), 8, "four sides and four cuts: {path:?}");
+        let corner = rect.shrink(0.5).left_top();
+        assert!(
+            path.iter().all(|p| p.distance(corner) > 1.0),
+            "the top-left corner is cut: {path:?}"
+        );
+    }
+
     #[test]
     fn a_bottom_border_is_one_strip_on_the_bottom_edge_and_no_box() {
         let scale = Scale::new(1.5).unwrap();

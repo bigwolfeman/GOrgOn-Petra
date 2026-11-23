@@ -46,8 +46,8 @@ pub use status::{StatusShape, StatusToken, StatusTokenError};
 pub use syntax::{SYNTAX_CLASSES, syntax_token};
 pub use theme::{Theme, ThemeError, ThemeId, ThemeMismatch, ThemeUnusable};
 pub use value::{
-    ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue, TokenKind,
-    TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
+    BorderStyle, ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue,
+    TokenKind, TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
 };
 pub use vocabulary::{DesignToken, Vocabulary};
 
