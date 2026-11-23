@@ -1,7 +1,7 @@
 //! Subtree reuse: what an incremental frame may keep, and how it proves it.
 //!
 //! The design this implements is
-//! `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`.
+//! `.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`.
 //! The short version: a subtree may be kept from the previous frame when the
 //! host did not declare a change under it, the state it reads has not moved,
 //! and it is the *same allocation* the previous frame placed. Declaration
@@ -33,15 +33,14 @@
 //! previous and current trees and panics naming the first node whose `Arc`
 //! moved without being covered by the declared change set.
 //!
-//! **What that verifier does not catch.** It is an `Arc`-identity check, so
-//! it can only ever see a node the host silently rebuilt — a new allocation
-//! in place of the old one. A host that mutates the store behind a
-//! `collection`'s `RowSource` and reports `ChangeSet::None` (or omits the
-//! collection's id) leaves the tree genuinely unchanged: no `Arc` diverges
-//! anywhere, so this walk sees nothing wrong and the rows go stale in
-//! silence. That case is the host obligation this note's §2 item 5 states
-//! directly, not something an `Arc`-comparison walk can discharge — see
-//! `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`.
+//! **Rows are not the host's to report.** That verifier is an `Arc`-identity
+//! check, so it could never see a store behind a `collection`'s `RowSource`
+//! that changed while the tree stood still. The engine closes that case
+//! itself instead: every collection is dirty on the incremental path
+//! ([`FrameMemo::dirty_ids`]), so its window is always fetched, and each
+//! fetched row is grafted onto the last fetch so a row that changed under
+//! its key is re-measured ([`crate::layout::row_memo`]). See
+//! `.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -144,6 +143,11 @@ impl FrameMemo {
     ///    would call every frame of a selection unchanged and reuse the
     ///    subtree that has the old highlight painted into it.
     ///
+    /// 6. Every `collection` and every anchored `surface` in the previous
+    ///    tree: each reads something no `Arc` can vouch for (a row source, an
+    ///    anchor's rect), so neither is ever carried over whole. See
+    ///    [`volatile_subtrees`].
+    ///
     /// Returns `None` when the change set is [`ChangeSet::All`], which is the
     /// host saying it does not know: there is no dirty *set* in that case,
     /// only a dirty everything.
@@ -236,7 +240,7 @@ impl FrameMemo {
             }
         }
 
-        anchored_surfaces(&self.tree, &mut KeyPath::root(), &mut dirty);
+        volatile_subtrees(&self.tree, &mut KeyPath::root(), &mut dirty);
 
         Some(dirty)
     }
@@ -269,10 +273,20 @@ impl FrameMemo {
     }
 }
 
-/// Every `surface` in `node`'s subtree whose anchor names another node, by
-/// canonical id, added to `dirty`.
+/// Every node in `node`'s subtree whose placement reads something the tree
+/// does not carry, by canonical id, added to `dirty`. Two kinds qualify.
 ///
-/// `contracts/anchored-placement.md` §6: an anchored surface is
+/// **A `collection`.** Its rows come from the host's
+/// [`crate::layout::RowSource`] during placement, not from the tree, so an
+/// unchanged `Arc` says nothing about them. Reusing the collection would skip
+/// the fetch and freeze the list; re-placing it fetches the window and grafts
+/// each row onto the last fetch ([`crate::layout::row_memo`]), so a row that
+/// did not move is still measured from the cache. This is what lets a host's
+/// row source keep the plain contract it always had, rather than report each
+/// list whose rows moved (the obligation this note's first draft put on the
+/// host, and which no host in this repository met).
+///
+/// **An anchored `surface`.** `contracts/anchored-placement.md` §6: one is
 /// *unconditionally* dirty on the incremental path. Nothing cheaper is
 /// sound. The reuse test is pointer identity plus slot equality, and both can
 /// hold across a frame in which the anchor moved — a scroll under the anchor
@@ -290,18 +304,19 @@ impl FrameMemo {
 /// implementation, and it is the same order the harvest walk's own target
 /// collection already pays; a tree with no `surface` in it touches no
 /// allocation here at all.
-fn anchored_surfaces(node: &ViewNode, path: &mut KeyPath, dirty: &mut BTreeSet<String>) {
+fn volatile_subtrees(node: &ViewNode, path: &mut KeyPath, dirty: &mut BTreeSet<String>) {
     path.push(node.key.clone());
-    if node
-        .props
-        .anchor
-        .as_ref()
-        .is_some_and(crate::tree::Anchor::names_node)
+    if node.kind == crate::tree::NodeKind::Collection
+        || node
+            .props
+            .anchor
+            .as_ref()
+            .is_some_and(crate::tree::Anchor::names_node)
     {
         dirty.insert(path.id());
     }
     for child in &node.children {
-        anchored_surfaces(child, path, dirty);
+        volatile_subtrees(child, path, dirty);
     }
     path.pop();
 }

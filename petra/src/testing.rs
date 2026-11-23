@@ -636,6 +636,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             scroll: ScrollStack::new(),
             reuse: None,
             anchors: AnchorRects::new(),
+            profile: None,
         }
     }
 

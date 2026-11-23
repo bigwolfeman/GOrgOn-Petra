@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use crate::geom::Rect;
 use crate::layout::reuse::{FrameMemo, ReuseState, ReuseStats};
-use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot};
+use crate::layout::{LayoutCtx, PhaseProfile, Proposal, SizeProposal, Slot};
 use crate::tree::{KeyPath, ValidatedTree};
 
 pub use digest::{FrameDigest, canonical_decimal, hash_text};
@@ -74,7 +74,7 @@ pub struct PetrifiedFrame {
     /// to its parent: [`petrify_with_memo`] copies a subtree from the
     /// previous frame and reuses the hash recorded here instead of
     /// re-walking it
-    /// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
+    /// (`.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`).
     pub subtree_hashes: Vec<[u8; 32]>,
     /// How many placements each index's subtree occupies, itself included —
     /// see [`crate::frame::placement::PlacementList`] — at the same index
@@ -421,7 +421,7 @@ impl FrameCounter {
 /// from the state the engine can diff for itself; it says *where* to look,
 /// and pointer identity then decides what may actually be kept. The design,
 /// including why both are needed, is
-/// `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`.
+/// `.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`.
 ///
 /// The frame this returns is byte-for-byte what [`petrify`] would have
 /// produced from the same tree — placements, paint payloads, subtree hashes
@@ -474,6 +474,25 @@ pub fn petrify_with_memo<'a>(
     (frame, stats)
 }
 
+/// A stopwatch over [`LayoutCtx::profile`]: each [`Lap::mark`] adds the time
+/// since the last mark to one phase. Reads no clock when the context has no
+/// profile, so an unprofiled petrify pays one branch per phase.
+struct Lap(f64);
+
+impl Lap {
+    fn start(ctx: &LayoutCtx<'_>) -> Self {
+        Self(ctx.profile.map_or(0.0, |p| (p.clock)()))
+    }
+
+    fn mark(&mut self, ctx: &mut LayoutCtx<'_>, phase: fn(&mut PhaseProfile) -> &mut f64) {
+        if let Some(profile) = ctx.profile.as_mut() {
+            let now = (profile.clock)();
+            *phase(profile) += now - self.0;
+            self.0 = now;
+        }
+    }
+}
+
 /// Whether two placements sit on the same line of the picture.
 ///
 /// Overlap on the vertical, not equality of `y`: a link and the prose it sits
@@ -509,6 +528,7 @@ pub fn petrify(
 ) -> PetrifiedFrame {
     let tree = &*tree;
     let mut path = KeyPath::root();
+    let mut lap = Lap::start(ctx);
     let viewport_rect = Rect::new(0.0, 0.0, viewport.size.w, viewport.size.h);
     // Docks come off the window before anything is offered anything, for the
     // reason `overlay_surface::DockInsets` gives: the page is what is left of
@@ -519,6 +539,7 @@ pub fn petrify(
     // dock nothing (`DockInsets::is_empty`).
     let docks = crate::layout::overlay_surface::dock_insets(tree, ctx, viewport_rect);
     let page_rect = docks.deflate(viewport_rect);
+    lap.mark(ctx, |p| &mut p.docks);
     let offer = SizeProposal {
         horizontal: Proposal::Exact(page_rect.w),
         vertical: Proposal::Exact(page_rect.h),
@@ -527,6 +548,7 @@ pub fn petrify(
     // `place` reads back, and skipping it would make every container
     // re-negotiate from scratch during placement.
     let _ = crate::layout::measure(tree, ctx, &mut path, offer);
+    lap.mark(ctx, |p| &mut p.measure);
     let slot = Slot {
         // The page for flow, the window for floats. A docked surface is
         // placed against `Slot::window` at every depth
@@ -543,6 +565,7 @@ pub fn petrify(
     };
     let mut sink = PlacementList::new();
     crate::layout::place(tree, ctx, &mut path, slot, &mut sink);
+    lap.mark(ctx, |p| &mut p.place);
     debug_assert!(
         path.is_empty(),
         "the walk must leave the path as it found it"
@@ -576,11 +599,13 @@ pub fn petrify(
             }
         }
     }
+    lap.mark(ctx, |p| &mut p.resolve);
     // Computed once: the array is what a reuse pass needs, and the root
     // entry is what the frame digest is built from — no reason to walk the
     // Merkle tree a second time to get the same root hash.
     let subtree_hashes = digest::subtree_hashes_with(viewport.scale, &placements, &reused_hashes);
     let digest = digest::digest_from_root(&viewport, digest::root_hash_from(&subtree_hashes));
+    lap.mark(ctx, |p| &mut p.digest);
     let frame = PetrifiedFrame {
         seq,
         digest,

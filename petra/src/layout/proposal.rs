@@ -5,7 +5,7 @@
 //! makes that affordable, which is why it is part of the vocabulary module
 //! rather than an optimisation bolted on later.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::cache::LruCache;
@@ -158,7 +158,7 @@ impl SizeProposal {
 /// Theme and scale are the whole invalidation story left in the key itself.
 /// Content is not: a per-node global revision here is exactly the design
 /// this key used to carry and no longer does
-/// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
+/// (`.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`,
 /// "A per-node revision counters instead of a change set" in Alternatives
 /// considered) — content invalidation is [`ChangeSet`], applied once per
 /// frame by [`MeasureCache::apply`] rather than compared per lookup. Adding a
@@ -199,6 +199,21 @@ pub enum ChangeSet {
 }
 
 impl ChangeSet {
+    /// Whatever moved, moved in the tree: nothing outside it (rows aside,
+    /// which the engine checks itself) answers differently.
+    ///
+    /// For a host that grafts each new view onto the last one
+    /// (`gorgon-petra-egui`'s `Host` does), this is all an application that
+    /// rebuilds its tree from state has to say: the graft names what moved.
+    /// It is not [`ChangeSet::None`], which also tells such a host it may skip
+    /// asking for a view at all. To a caller of
+    /// [`crate::frame::petrify_with_memo`] that diffs nothing, it reads as
+    /// "no node declared", which is what it is.
+    #[must_use]
+    pub fn in_tree() -> Self {
+        Self::Nodes(BTreeSet::new())
+    }
+
     /// A change set naming exactly one node.
     #[must_use]
     pub fn node(id: impl Into<String>) -> Self {
@@ -219,7 +234,19 @@ impl ChangeSet {
 /// measurement the current or the previous frame took, however dense the tree.
 #[derive(Debug)]
 pub struct MeasureCache {
-    entries: LruCache<MeasureKey, Size>,
+    /// Each response with the epoch it was stored at.
+    entries: LruCache<MeasureKey, (Size, u64)>,
+    /// The epoch each node id was last invalidated at. An entry stored at or
+    /// before its node's mark is stale and answers as a miss.
+    ///
+    /// Invalidation marks rather than scans: a scan is O(entries) per call,
+    /// and an incremental host invalidates on most frames (each row a scroll
+    /// brings into view names its nodes). A stale entry ages out of the LRU
+    /// like any other, and the marks are compacted away once they outnumber
+    /// the bound ([`MeasureCache::invalidate_nodes`]).
+    invalidated: HashMap<String, u64>,
+    /// Advances on every store and every invalidation.
+    epoch: u64,
     hits: u64,
     misses: u64,
 }
@@ -269,6 +296,8 @@ impl MeasureCache {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: LruCache::with_capacity(capacity),
+            invalidated: HashMap::new(),
+            epoch: 0,
             hits: 0,
             misses: 0,
         }
@@ -306,7 +335,18 @@ impl MeasureCache {
     /// `get_or_insert_with`: the compute step re-enters layout with the same
     /// context that owns this cache, and a closure would hold the borrow.
     pub fn peek(&mut self, key: &MeasureKey) -> Option<Size> {
-        match self.entries.get(key).copied() {
+        let mark = if self.invalidated.is_empty() {
+            0
+        } else {
+            self.invalidated.get(&key.node).copied().unwrap_or(0)
+        };
+        match self
+            .entries
+            .get(key)
+            .copied()
+            .filter(|(_, stored)| *stored > mark)
+            .map(|(size, _)| size)
+        {
             Some(hit) => {
                 self.hits += 1;
                 Some(hit)
@@ -322,7 +362,8 @@ impl MeasureCache {
     /// a cached size is a digest input.
     pub fn insert(&mut self, key: MeasureKey, value: Size) -> Size {
         let value = value.sane();
-        self.entries.insert(key, value);
+        self.epoch += 1;
+        self.entries.insert(key, (value, self.epoch));
         value
     }
 
@@ -348,12 +389,13 @@ impl MeasureCache {
     /// descendants — [`MeasureCache::apply`] is what a host wants for a
     /// content change; this is the primitive it is built from.
     pub fn invalidate_node(&mut self, node: &str) {
-        self.entries.retain(|key, _| key.node != node);
+        self.invalidate_nodes(&std::iter::once(node.to_owned()).collect());
     }
 
     /// Drop everything.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.invalidated.clear();
     }
 
     /// Apply a change set: invalidate exactly what it names, and nothing more
@@ -372,26 +414,66 @@ impl MeasureCache {
             ChangeSet::All => self.clear(),
             ChangeSet::None => {}
             ChangeSet::Nodes(ids) => {
+                // One pass over the entries against the whole set, not one
+                // `retain` per id: a frame that names thirty nodes fifteen
+                // deep would otherwise scan every entry four hundred times.
+                let mut doomed: HashSet<String> = HashSet::new();
                 for id in ids {
-                    self.invalidate_node(id);
-                    for ancestor in KeyPath::ancestor_ids(id) {
-                        self.invalidate_node(&ancestor);
+                    if doomed.insert(id.clone()) {
+                        doomed.extend(KeyPath::ancestor_ids(id));
                     }
                 }
+                self.invalidate_nodes(&doomed);
             }
         }
     }
 
-    /// Entries currently held.
+    /// Drop every entry for every node in `ids`, in one pass over the
+    /// entries. Exactly the named nodes: no ancestor walk, which is what a
+    /// caller wants when it has already decided how far up a change reaches
+    /// (a collection row, whose ancestors measure from the extents ledger
+    /// rather than from the row).
+    ///
+    /// O(`ids`): each id is marked, not searched for. When the marks outnumber
+    /// the entry bound they are compacted, in one pass that drops every stale
+    /// entry and then forgets the marks, so the marks cannot grow without
+    /// bound however many distinct ids a long scroll invalidates.
+    pub fn invalidate_nodes(&mut self, ids: &HashSet<String>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.epoch += 1;
+        for id in ids {
+            self.invalidated.insert(id.clone(), self.epoch);
+        }
+        if self.invalidated.len() > self.entries.capacity() {
+            let marks = std::mem::take(&mut self.invalidated);
+            self.entries
+                .retain(|key, (_, stored)| *stored > marks.get(&key.node).copied().unwrap_or(0));
+        }
+    }
+
+    /// Entries that can still answer: held, and stored after their node was
+    /// last invalidated. A stale entry still takes a slot until the LRU or a
+    /// compaction drops it, so this walks the entries; it is for tests and
+    /// diagnostics, not for a frame.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        if self.invalidated.is_empty() {
+            return self.entries.len();
+        }
+        self.entries
+            .iter()
+            .filter(|(key, (_, stored))| {
+                *stored > self.invalidated.get(&key.node).copied().unwrap_or(0)
+            })
+            .count()
     }
 
     /// Whether the cache holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 
     /// Hit and miss counts since construction. The bench and the multi-probe
@@ -489,6 +571,42 @@ mod tests {
         cache.get_or_insert_with(key("/b", SizeProposal::zero()), || Size::new(1.0, 1.0));
         cache.invalidate_node("/a");
         assert_eq!(cache.len(), 1);
+    }
+
+    /// An entry stored again after its node was invalidated answers: the
+    /// mark only reaches what was stored before it.
+    #[test]
+    fn a_node_measured_again_after_invalidation_hits() {
+        let mut cache = MeasureCache::new();
+        let probe = key("/a", SizeProposal::zero());
+        cache.insert(probe.clone(), Size::new(1.0, 1.0));
+        cache.invalidate_node("/a");
+        assert_eq!(cache.peek(&probe), None, "the stale entry answered");
+        cache.insert(probe.clone(), Size::new(2.0, 2.0));
+        assert_eq!(cache.peek(&probe), Some(Size::new(2.0, 2.0)));
+    }
+
+    /// A long scroll invalidates far more distinct ids than the cache holds.
+    /// The marks are compacted at the bound, so they cannot grow with it, and
+    /// compaction keeps every live entry.
+    #[test]
+    fn invalidation_marks_stay_inside_the_bound() {
+        let mut cache = MeasureCache::with_capacity(8);
+        let live = key("/live", SizeProposal::zero());
+        cache.insert(live.clone(), Size::new(1.0, 1.0));
+        for n in 0..100 {
+            let id = format!("/row-{n}");
+            cache.insert(key(&id, SizeProposal::zero()), Size::new(1.0, 1.0));
+            cache.invalidate_node(&id);
+            // Touched every round, so the LRU keeps it newest.
+            assert_eq!(cache.peek(&live), Some(Size::new(1.0, 1.0)));
+            assert!(
+                cache.invalidated.len() <= cache.capacity(),
+                "{} marks over an {}-entry bound",
+                cache.invalidated.len(),
+                cache.capacity()
+            );
+        }
     }
 
     #[test]

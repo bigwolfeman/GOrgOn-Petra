@@ -39,6 +39,7 @@ pub mod image;
 pub mod inject;
 pub mod input;
 pub mod paint;
+pub mod profile;
 #[cfg(not(target_arch = "wasm32"))]
 mod scene_cache;
 pub mod schedule;

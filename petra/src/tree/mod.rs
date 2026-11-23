@@ -24,6 +24,7 @@ pub use binding_eval::{
     ApplyError, BindTarget, HeldValues, Landed, ResolveError, ResolveInputs, ResolvedTree,
     carries_bindings, check_slot_versions, land_batch,
 };
+pub use graft::graft_shared;
 pub use key::{Key, KeyPath};
 pub use node::{
     AxisConstraint, Behaviour, ComponentRef, Constraints, FocusFigure, FocusShownOn, Intent,

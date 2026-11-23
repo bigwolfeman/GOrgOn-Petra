@@ -16,6 +16,7 @@ pub mod overlay;
 pub mod overlay_surface;
 pub mod proposal;
 pub mod reuse;
+pub mod row_memo;
 pub mod scroll;
 pub mod selection;
 pub mod stack;
@@ -404,6 +405,54 @@ pub struct LayoutCtx<'a> {
     /// for: everything one negotiation pass carries, available at the read
     /// site (`contracts/anchored-placement.md` §1 step 3).
     pub anchors: AnchorRects,
+    /// Where one [`crate::frame::petrify`] spent its wall-clock time, when
+    /// the host installed a clock. `None` costs nothing and records nothing.
+    pub profile: Option<PhaseProfile>,
+}
+
+/// The wall-clock split of one [`crate::frame::petrify`], in seconds.
+///
+/// This crate owns no clock, because a clock is a host fact (wasm has none
+/// that `std` can read, and a driver steps its own). The host hands one in
+/// as a plain function, and [`crate::frame::petrify`] reads it between its
+/// phases. A pass that petrifies more than once (a focus correction places
+/// the same tree again) adds into the same profile, so the numbers are the
+/// pass's, not the last call's.
+#[derive(Clone, Copy, Debug)]
+pub struct PhaseProfile {
+    /// Seconds since any fixed origin. Only differences are read.
+    pub clock: fn() -> f64,
+    /// Docked surfaces taken off the window.
+    pub docks: f64,
+    /// The measure walk from the root.
+    pub measure: f64,
+    /// The place walk, the anchor harvest included.
+    pub place: f64,
+    /// The text-selection pass over the finished list.
+    pub resolve: f64,
+    /// The Merkle subtree hashes and the frame digest.
+    pub digest: f64,
+}
+
+impl PhaseProfile {
+    /// An empty profile that reads `clock`.
+    #[must_use]
+    pub fn new(clock: fn() -> f64) -> Self {
+        Self {
+            clock,
+            docks: 0.0,
+            measure: 0.0,
+            place: 0.0,
+            resolve: 0.0,
+            digest: 0.0,
+        }
+    }
+
+    /// The five phases summed.
+    #[must_use]
+    pub fn total(&self) -> f64 {
+        self.docks + self.measure + self.place + self.resolve + self.digest
+    }
 }
 
 impl LayoutCtx<'_> {

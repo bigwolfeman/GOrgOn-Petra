@@ -1000,7 +1000,7 @@ pub struct ViewNode {
     /// Shared via `Arc` so a host can hand back the exact allocation a
     /// previous frame placed and let the engine skip re-placing that
     /// subtree (`Arc::ptr_eq` is the proof of "unchanged" —
-    /// `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
+    /// `.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`).
     /// Serde's `rc` feature serializes each `Arc` independently: a
     /// round-tripped tree does **not** preserve sharing, and that is fine —
     /// a deserialized tree has no previous frame to be shared with.
