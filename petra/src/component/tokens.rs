@@ -145,6 +145,16 @@ pub(crate) const OVERLAY_SCRIM: &str = "overlay.scrim";
 
 pub(crate) const SURFACE_BASE: &str = "surface.base";
 pub(crate) const SURFACE_RAISED: &str = "surface.raised";
+/// A workbench frame's working surface (`crate::token::chrome`).
+pub(crate) const CHROME_GROUND: &str = crate::token::chrome::CHROME_GROUND;
+/// A workbench frame's side bar, tab strip and status line.
+pub(crate) const CHROME_SIDE: &str = crate::token::chrome::CHROME_SIDE;
+/// The hairline between a workbench frame's parts.
+pub(crate) const CHROME_RULE: &str = crate::token::chrome::CHROME_RULE;
+/// A hovered row on [`CHROME_SIDE`].
+pub(crate) const CHROME_HOVER: &str = crate::token::chrome::CHROME_HOVER;
+/// A selected row on [`CHROME_SIDE`].
+pub(crate) const CHROME_SELECTED: &str = crate::token::chrome::CHROME_SELECTED;
 /// One step past [`SURFACE_RAISED`] on the layer ramp
 /// (`token::shipped::LAYER_TOKENS[2]`).
 ///
@@ -476,6 +486,11 @@ pub(crate) const ALL: &[&str] = &[
     ICON_ON_COLOR_DISABLED,
     BUTTON_DISABLED,
     LINK_PRIMARY,
+    CHROME_GROUND,
+    CHROME_SIDE,
+    CHROME_RULE,
+    CHROME_HOVER,
+    CHROME_SELECTED,
 ];
 
 /// `name` as a [`TokenName`].

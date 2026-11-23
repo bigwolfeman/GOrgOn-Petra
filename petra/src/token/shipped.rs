@@ -2732,6 +2732,8 @@ pub fn standard_vocabulary() -> Vocabulary {
             StatusToken::new(name("status.unknown"), StatusShape::Diamond, "Unknown")
                 .expect("non-empty literal text"),
         );
+    // A workbench frame's flat surfaces (`crate::token::chrome`).
+    crate::token::chrome::declare(&mut vocab);
 
     vocab
 }
@@ -2752,6 +2754,7 @@ fn build(palette: &Palette) -> Theme {
     let inverse = palette.inverse();
 
     insert_layer_set(&mut values, palette.layers);
+    crate::token::chrome::insert(&mut values, palette.id);
     insert_accent(&mut values, palette);
     insert_border(&mut values, &palette.border());
     insert_rule_material(&mut values, palette.layers);

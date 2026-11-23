@@ -29,7 +29,7 @@ use crate::component::{
     structured_list, structured_list_condensed, structured_list_condensed_sized,
     structured_list_row, structured_list_row_static, structured_list_sized, tile, toggletip,
     toggletip_with, tooltip, tooltip_anchored, tooltip_definition, tooltip_icon, tree_item,
-    tree_item_xs, tree_row, tree_rows, tree_rows_xs, tree_view, unordered_list,
+    tree_item_xs, tree_row, tree_rows, tree_rows_compact, tree_rows_xs, tree_view, unordered_list,
     unordered_list_with,
 };
 use crate::component::{TreeAdornments, TreeBranch, TreePlace};
@@ -616,6 +616,12 @@ pub const ENTRIES: &[Entry] = &[
         p.source,
         p.total_count
     )),
+    row!("tree_rows_compact", TreeRowsParams, |p| tree_rows_compact(
+        p.key,
+        p.label,
+        p.source,
+        p.total_count
+    )),
     row!("tree_rows_xs", TreeRowsParams, |p| tree_rows_xs(
         p.key,
         p.label,
@@ -949,6 +955,9 @@ mod tests {
             "tree_view" => json!({ "key": "k", "children": [] }),
             "tree_rows" => {
                 json!({ "key": "k", "label": "Files", "source": "files", "total_count": 7 })
+            }
+            "tree_rows_compact" => {
+                json!({ "key": "k", "label": "Files", "source": "files-compact", "total_count": 7 })
             }
             "tree_rows_xs" => {
                 json!({ "key": "k", "label": "Files", "source": "files-xs", "total_count": 7 })

@@ -140,6 +140,23 @@ impl ParamShape for IconParams {
     const LUAU: &'static str = concat!("{ key: string, mark: ", crate::icon_mark_luau!(), " }");
 }
 
+/// `chrome_icon_button(key, mark, label)`: a frame control drawn as one
+/// glyph, `label` its accessible name.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChromeIconButtonParams {
+    key: Key,
+    mark: IconMarkParam,
+    label: String,
+}
+impl ParamShape for ChromeIconButtonParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, mark: ",
+        crate::icon_mark_luau!(),
+        ", label: string }"
+    );
+}
+
 /// `icon_toned(key, mark, tone)`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -382,6 +399,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("ghost_button_xs", KeyLabel, |p| lib::ghost_button_xs(
         p.key, p.label
     )),
+    row!("chrome_button", KeyLabel, |p| lib::chrome_button(
+        p.key, p.label
+    )),
+    row!("chrome_icon_button", ChromeIconButtonParams, |p| {
+        lib::chrome_icon_button(p.key, p.mark.into(), p.label)
+    }),
     row!("danger_button", KeyLabel, |p| lib::danger_button(
         p.key, p.label
     )),

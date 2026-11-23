@@ -892,6 +892,15 @@ pub struct Semantics {
     /// the control is what says.
     #[serde(default, skip_serializing_if = "is_false")]
     pub focus_run: bool,
+    /// A pointer press on this control leaves the focus indicator hidden
+    /// until the next key. For a row whose selection fill already marks it
+    /// after the press, where a second mark under the pointer reads as a
+    /// second current row; the web's `:focus-visible` makes the same call
+    /// for anything that is not a text field. Focus itself still moves, and
+    /// a key shows the indicator again. The default keeps the Carbon
+    /// picture, where a pressed field, tab or trigger shows its figure.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub focus_quiet_on_press: bool,
     /// This control owns the text inside it: a press there is the control's,
     /// no selection anchors in it, and a span that crosses it steps over its
     /// words rather than highlighting or copying them.
@@ -1264,6 +1273,14 @@ impl ViewNode {
     #[must_use]
     pub fn with_focus_run(mut self) -> Self {
         self.semantics.focus_run = true;
+        self
+    }
+
+    /// Declare that a pointer press leaves this control's focus indicator
+    /// hidden until a key. See [`Semantics::focus_quiet_on_press`].
+    #[must_use]
+    pub fn with_focus_quiet_on_press(mut self) -> Self {
+        self.semantics.focus_quiet_on_press = true;
         self
     }
 

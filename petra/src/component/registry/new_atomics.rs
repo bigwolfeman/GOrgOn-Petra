@@ -232,6 +232,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("toggle_button", KeyLabelPressed, |p| lib::toggle_button(
         p.key, p.label, p.pressed
     )),
+    row!("chrome_toggle_button", KeyLabelPressed, |p| {
+        lib::chrome_toggle_button(p.key, p.label, p.pressed)
+    }),
     row!("toggle_button_icon", KeyLabelPressedMark, |p| {
         lib::toggle_button_icon(p.key, p.label, p.pressed, p.mark.into())
     }),

@@ -50,9 +50,11 @@
 use std::sync::Arc;
 
 use super::tokens::{
-    ACCENT_PRIMARY, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, TEXT_FAINT, t,
+    ACCENT_PRIMARY, CHROME_HOVER, CHROME_SELECTED, LAYER_HOVER, LAYER_SELECTED,
+    LAYER_SELECTED_HOVER, SPACING_03, SPACING_05, TEXT_FAINT, TEXT_MUTED, TEXT_PRIMARY,
+    TYPOGRAPHY_LABEL, t,
 };
-use super::{CARET_SIZE, CaretDirection, IconMark, caret, stack, swatch};
+use super::{CARET_SIZE, CaretDirection, IconMark, caret, chevron, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
     AxisConstraint, Behaviour, FocusFigure, FocusShownOn, InsetRefs, Intent, Interaction, Key,
@@ -90,6 +92,16 @@ const SLOT_GAP: f32 = 8.0;
 /// was one step too close to the plain label: a tree's dotfiles read as the
 /// same weight as its names (shell audit, 2026-11-08).
 const DIMMED_ICON_OPACITY: f32 = 0.5;
+
+/// The workbench density's row height ([`TreeItem::compact`]): the
+/// reference editors' tree pitch, measured at 22 on a 1x capture.
+pub const HEIGHT_COMPACT: f32 = 22.0;
+/// The workbench density's lead before the chevron box.
+const LEAD_COMPACT: f32 = 4.0;
+/// The workbench density's gap between the chevron box and the label.
+const CARET_GAP_COMPACT: f32 = 4.0;
+/// The workbench density's indent per level: the reference editors' 8.
+pub const LEVEL_INDENT_COMPACT: f32 = 8.0;
 
 const _: () = assert!(HEIGHT == 32.0);
 const _: () = assert!(HEIGHT_XS == 24.0);
@@ -211,7 +223,10 @@ pub struct TreeItem {
     branch: TreeBranch,
     selected: bool,
     height: f32,
+    compact: bool,
+    header: bool,
     icon: Option<ViewNode>,
+    detail: Option<String>,
     mark: Option<ViewNode>,
     dimmed: Option<String>,
     state: Option<String>,
@@ -228,7 +243,10 @@ impl TreeItem {
             branch: TreeBranch::Leaf,
             selected: false,
             height: HEIGHT,
+            compact: false,
+            header: false,
             icon: None,
+            detail: None,
             mark: None,
             dimmed: None,
             state: None,
@@ -257,6 +275,33 @@ impl TreeItem {
         self
     }
 
+    /// The workbench density: the tree of an application frame's side bar.
+    ///
+    /// [`HEIGHT_COMPACT`] (22) rows, [`LEVEL_INDENT_COMPACT`] (8) per level,
+    /// a thin [`chevron`] for the caret, no accent bar, and the label in
+    /// `text.muted` at rest and `text.primary` when selected. The mark moves
+    /// to the row's trailing edge, where an editor's tree keeps its change
+    /// letters, so a column of marks reads down the side bar. The row
+    /// states bind the chrome set (`chrome.hover`, `chrome.selected`), the
+    /// fills of the frame the tree sits in. Selection is the fill and the
+    /// brighter label: both are lightness, which a red-green colour-blind
+    /// reader keeps.
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self.height = HEIGHT_COMPACT;
+        self
+    }
+
+    /// A row that heads a section of the tree, such as a project root at
+    /// the top of a side bar: the label in label type, upper case, in
+    /// `text.muted`. The semantic label keeps the name as written.
+    #[must_use]
+    pub fn header(mut self) -> Self {
+        self.header = true;
+        self
+    }
+
     /// A node between the caret and the label. The caller sizes it. A
     /// dimmed row draws it at half opacity.
     #[must_use]
@@ -278,6 +323,17 @@ impl TreeItem {
     #[must_use]
     pub fn mark(mut self, mark: ViewNode) -> Self {
         self.mark = Some(mark);
+        self
+    }
+
+    /// Words after the label in a quieter ink, as an editor's list names a
+    /// file's folder after its name (`marks.rs  gorgon/shell-app/src/git`).
+    /// The detail gives way first when the row is narrow: it ellipsizes and
+    /// then takes no width, while the label and the mark keep theirs. It is
+    /// drawn only; put it in [`Self::state`] when a reader needs it.
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 
@@ -324,7 +380,10 @@ impl TreeItem {
             branch,
             selected,
             height,
+            compact,
+            header,
             icon,
+            detail,
             mark,
             dimmed,
             state,
@@ -334,42 +393,61 @@ impl TreeItem {
         // The bar keeps its width in every state; only its fill comes and
         // goes, so the label never shifts when the selection moves.
         let bar_fill = selected.then_some(ACCENT_PRIMARY);
+        let direction = if branch.is_open() {
+            CaretDirection::Down
+        } else {
+            CaretDirection::Right
+        };
         let disclosure = if branch.is_branch() {
-            caret(
-                "caret",
-                if branch.is_open() {
-                    CaretDirection::Down
-                } else {
-                    CaretDirection::Right
-                },
-            )
+            if compact {
+                chevron("caret", direction)
+            } else {
+                caret("caret", direction)
+            }
         } else {
             swatch("caret-slot", CARET_SIZE, CARET_SIZE, None, None, None)
         };
 
-        let mut label_node = super::text::text("label", label.clone()).with_focus_run();
+        let drawn = if header {
+            label.to_uppercase()
+        } else {
+            label.clone()
+        };
+        let mut label_node = super::text::text("label", drawn).with_focus_run();
         // One line. A long name ends in an ellipsis instead of wrapping into
         // a second line that the pinned row height would clip.
         label_node.props.wrap = Some(TextWrap::Ellipsis);
-        if dimmed.is_some() {
-            label_node
-                .props
-                .tokens
-                .insert("foreground".into(), t(TEXT_FAINT));
+        if header {
+            label_node.props.style = Some(t(TYPOGRAPHY_LABEL));
+        }
+        let ink = match (dimmed.is_some(), compact, selected) {
+            (true, _, _) => Some(TEXT_FAINT),
+            (false, true, true) => Some(TEXT_PRIMARY),
+            (false, true, false) => Some(TEXT_MUTED),
+            (false, false, _) => None,
+        };
+        if let Some(ink) = ink {
+            label_node.props.tokens.insert("foreground".into(), t(ink));
         }
 
-        let level_lead = place.map_or(0.0, |p| p.level.saturating_sub(1) as f32 * LEVEL_INDENT);
-        let mut lead = swatch("lead", LEAD, height, None, None, None);
+        let (lead_w, indent, gap) = if compact {
+            (LEAD_COMPACT, LEVEL_INDENT_COMPACT, CARET_GAP_COMPACT)
+        } else {
+            (LEAD, LEVEL_INDENT, CARET_GAP)
+        };
+        let level_lead = place.map_or(0.0, |p| p.level.saturating_sub(1) as f32 * indent);
+        let mut lead = swatch("lead", lead_w, height, None, None, None);
         if level_lead > 0.0 {
-            pin_width(&mut lead, LEAD + level_lead);
+            pin_width(&mut lead, lead_w + level_lead);
         }
 
-        let mut parts = vec![
-            swatch("bar", ACCENT_BAR, height, bar_fill, None, None),
-            lead,
-            disclosure,
-            swatch("gap", CARET_GAP, height, None, None, None),
-        ];
+        let mut parts = Vec::with_capacity(8);
+        if !compact {
+            parts.push(swatch("bar", ACCENT_BAR, height, bar_fill, None, None));
+        }
+        parts.push(lead);
+        parts.push(disclosure);
+        parts.push(swatch("gap", gap, height, None, None, None));
         if let Some(mut icon) = icon {
             icon.key = Key::new("icon");
             if dimmed.is_some() {
@@ -378,22 +456,69 @@ impl TreeItem {
             parts.push(icon);
             parts.push(swatch("icon-gap", SLOT_GAP, height, None, None, None));
         }
+        if compact {
+            // Who gives way when the row is narrow: the detail first, then
+            // the label (it ellipsizes); the mark never does.
+            label_node.constraints.horizontal.priority = 1;
+        }
         parts.push(label_node);
+        if let Some(detail) = detail {
+            let mut words = super::text::text("words", detail);
+            words.props.wrap = Some(TextWrap::Ellipsis);
+            words.props.tokens.insert(
+                "foreground".into(),
+                t(if compact { TEXT_FAINT } else { TEXT_MUTED }),
+            );
+            // The gap is padding inside the holder, so it goes with the words
+            // rather than standing as a fixed swatch the label would pay for.
+            let mut gapped = stack("gapped", Axis::Horizontal, None, vec![words]);
+            gapped.props.padding = Some(InsetRefs {
+                left: Some(t(SPACING_03)),
+                ..InsetRefs::default()
+            });
+            // One weight column: asked its least width it answers nothing,
+            // asked openly it answers the words. So the row reserves no floor
+            // for the detail, the label is never squeezed to keep a bare `…`
+            // of it, and words placed in a sliver clip to their own rect.
+            let holder = ViewNode::new(NodeKind::Grid, Key::new("detail"))
+                .with_props(Props {
+                    columns: vec![TrackSize::Weight { weight: 1.0 }],
+                    rows: vec![TrackSize::FitContent],
+                    // Start, not centre: the column may be wider than the
+                    // words, and centred words float off the name.
+                    align: Some(Align::Start),
+                    ..Props::default()
+                })
+                .with_children(vec![gapped]);
+            parts.push(holder);
+        }
         if let Some(mut mark) = mark {
             mark.key = Key::new("mark");
-            // The spacer takes only what the label and the mark leave
-            // (`contracts/view-tree.md` step 3.c), so the label keeps every
-            // unit up to the mark and the mark keeps its whole width; after
-            // the mark, it holds the rest of the row empty.
-            parts.push(swatch("mark-gap", SLOT_GAP, height, None, None, None));
-            parts.push(mark);
-            parts.push(ViewNode::new(NodeKind::Spacer, "spacer"));
+            if compact {
+                mark.constraints.horizontal.priority = 2;
+            }
+            if compact {
+                // The workbench tree keeps marks in a column at the row's
+                // trailing edge: the spacer goes first and the label gives
+                // way to the mark.
+                parts.push(ViewNode::new(NodeKind::Spacer, "spacer"));
+                parts.push(swatch("mark-gap", SLOT_GAP, height, None, None, None));
+                parts.push(mark);
+            } else {
+                // The spacer takes only what the label and the mark leave
+                // (`contracts/view-tree.md` step 3.c), so the label keeps
+                // every unit up to the mark and the mark keeps its whole
+                // width; after the mark, it holds the rest of the row empty.
+                parts.push(swatch("mark-gap", SLOT_GAP, height, None, None, None));
+                parts.push(mark);
+                parts.push(ViewNode::new(NodeKind::Spacer, "spacer"));
+            }
         }
 
         let mut row = stack("row", Axis::Horizontal, None, parts);
         row.props.align = Some(Align::Center);
         row.props.padding = Some(InsetRefs {
-            right: Some(t(SPACING_05)),
+            right: Some(t(if compact { SPACING_03 } else { SPACING_05 })),
             ..InsetRefs::default()
         });
         row.constraints.vertical = AxisConstraint {
@@ -468,11 +593,19 @@ impl TreeItem {
                 ..Props::default()
             })
             .with_children(parts);
+        let states = if compact {
+            [CHROME_HOVER, CHROME_SELECTED, CHROME_SELECTED]
+        } else {
+            [LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER]
+        };
         for (slot, token) in [
-            ("background@hover", LAYER_HOVER),
-            ("background@selected", LAYER_SELECTED),
-            ("background@selected-hover", LAYER_SELECTED_HOVER),
-        ] {
+            "background@hover",
+            "background@selected",
+            "background@selected-hover",
+        ]
+        .into_iter()
+        .zip(states)
+        {
             node.props.tokens.insert(slot.into(), t(token));
         }
         let semantic_label = match state.as_ref().or(dimmed.as_ref()) {
@@ -509,6 +642,11 @@ impl TreeItem {
         // be included, or the bar jumps 24 units when the box is ticked. So the
         // row declares it, which is what `Semantics::focus_run` is for.
         node.semantics.focus_figure = FocusFigure::BarInside;
+        // The workbench density follows the editor convention: a pressed row
+        // is marked by its selection fill, and a bar under the pointer as
+        // well reads as a second current row. A key shows the bar again.
+        // Carbon's own tree keeps its `:focus` picture.
+        node.semantics.focus_quiet_on_press = compact;
         node.semantics.selected = selected;
         // A leaf has nothing to expand, so it declares no state, as
         // WAI-ARIA has it. A branch says open or closed.
@@ -634,6 +772,16 @@ pub fn tree_row(
         item = item.at(place);
     }
     item.build(children)
+}
+
+/// [`tree_rows`] for rows built with [`TreeItem::compact`] (22).
+pub fn tree_rows_compact(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    source: impl Into<String>,
+    total_count: usize,
+) -> ViewNode {
+    tree_rows_sized(key, label, source, total_count, HEIGHT_COMPACT)
 }
 
 /// [`tree_rows`] for rows built with [`TreeItem::extra_small`] (24).
@@ -775,6 +923,10 @@ mod tests {
         ACCENT_BAR, ACCENT_PRIMARY, DIMMED_ICON_OPACITY, FocusShownOn, HEIGHT, HEIGHT_XS,
         LABEL_START, TreeBranch, TreeItem, TreePlace, tree_item, tree_item_xs, tree_rows,
         tree_view,
+    };
+    use super::{
+        CARET_GAP_COMPACT, CARET_SIZE, CHROME_SELECTED, HEIGHT_COMPACT, LEAD_COMPACT,
+        LEVEL_INDENT_COMPACT, TEXT_FAINT,
     };
     use crate::component::disabled;
     use crate::component::tests::{assert_fits_parent, petrify_lone};
@@ -1034,6 +1186,147 @@ mod tests {
     /// wide as the tree; a level-1 label starts 40 in whether its row is a
     /// branch or a leaf, a level-2 label 16 further; the selected row's
     /// accent bar is 4 wide, full row height, at the row's start.
+    /// The workbench density: 22-unit rows, 8 per level, a thin chevron in
+    /// the caret box, no accent bar, the mark at the row's trailing edge,
+    /// and the chrome set's row states.
+    #[test]
+    fn a_compact_row_takes_the_workbench_metrics() {
+        let place = |level| TreePlace {
+            level,
+            pos_in_set: 1,
+            set_size: 1,
+        };
+        let mark = super::super::text::text("m", "M");
+        let rows = vec![
+            TreeItem::new("top", "top")
+                .branch(TreeBranch::Closed)
+                .compact()
+                .header()
+                .at(place(1))
+                .build(Vec::new()),
+            TreeItem::new("deep", "deep")
+                .compact()
+                .selected(true)
+                .mark(mark)
+                .at(place(2))
+                .build(Vec::new()),
+        ];
+        let frame = petrify_lone(tree_view("fs", rows));
+        let tree = rect_of(&frame, "/fs");
+        assert_eq!(rect_of(&frame, "/top/row").h, HEIGHT_COMPACT);
+        let top = rect_of(&frame, "/top/row/label");
+        let deep = rect_of(&frame, "/deep/row/label");
+        assert_eq!(
+            top.x - tree.x,
+            LEAD_COMPACT + CARET_SIZE + CARET_GAP_COMPACT
+        );
+        assert_eq!(deep.x - top.x, LEVEL_INDENT_COMPACT);
+        let m = rect_of(&frame, "/deep/row/mark");
+        assert!(
+            tree.x + tree.w - (m.x + m.w) <= 8.5,
+            "the mark sits at the row's end: {m:?} in {tree:?}"
+        );
+        assert!(
+            frame.placements.iter().all(|p| !p.id.ends_with("/row/bar")),
+            "no accent bar in the workbench density"
+        );
+        let item = |key: &str| {
+            fn find<'a>(n: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+                if n.key.as_str() == key {
+                    return Some(n);
+                }
+                n.children.iter().find_map(|c| find(c, key))
+            }
+            let tree = tree_view(
+                "fs",
+                vec![TreeItem::new(key, "Label").compact().build(Vec::new())],
+            );
+            find(&tree, key).cloned().expect("the item")
+        };
+        let node = item("x");
+        assert_eq!(
+            node.props
+                .tokens
+                .get("background@selected")
+                .map(|t| t.as_str()),
+            Some(CHROME_SELECTED)
+        );
+        // A detail follows the label in the faint ink and gives way first:
+        // detail, then label, then never the mark.
+        let detailed = TreeItem::new("d", "mod.rs")
+            .compact()
+            .detail("gorgon/shell-app/src")
+            .mark(super::super::text::text("m", "M"))
+            .build(Vec::new());
+        let row = named(&detailed, "row");
+        let part = |key: &str| {
+            row.children
+                .iter()
+                .find(|c| c.key.as_str() == key)
+                .unwrap_or_else(|| panic!("no {key}"))
+        };
+        assert!(detailed.semantics.focus_quiet_on_press);
+        assert!(
+            !TreeItem::new("c", "Carbon")
+                .build(Vec::new())
+                .semantics
+                .focus_quiet_on_press,
+            "the Carbon tree keeps its pressed figure"
+        );
+        assert_eq!(part("detail").constraints.horizontal.priority, 0);
+        assert_eq!(part("label").constraints.horizontal.priority, 1);
+        assert_eq!(part("mark").constraints.horizontal.priority, 2);
+        assert_eq!(
+            part("detail").children[0].children[0]
+                .props
+                .tokens
+                .get("foreground")
+                .map(|t| t.as_str()),
+            Some(TEXT_FAINT)
+        );
+        // In layout: a row too narrow for the label keeps no sliver of the
+        // detail, and a wide row shows all of it.
+        let laid = |width: f32| {
+            let row = TreeItem::new("d", "a_very_long_file_name_indeed.rs")
+                .compact()
+                .detail("gorgon/shell-app/src")
+                .mark(super::super::text::text("m", "M"))
+                .build(Vec::new());
+            super::super::tests::petrify_lone_at(row, crate::geom::Size::new(width, 100.0))
+        };
+        let width_of = |frame: &crate::frame::PetrifiedFrame, key: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(&format!("/{key}")))
+                .map(|p| p.rect.w)
+                .unwrap_or_else(|| panic!("no {key}"))
+        };
+        let narrow = laid(160.0);
+        assert!(
+            width_of(&narrow, "detail") < 1.0,
+            "a squeezed row kept {} units of the detail",
+            width_of(&narrow, "detail")
+        );
+        assert!(width_of(&narrow, "label") > 60.0);
+        let wide = laid(900.0);
+        assert!(width_of(&wide, "detail") > 0.0);
+        assert!(
+            wide.content
+                .iter()
+                .filter_map(|c| c.text.as_ref())
+                .any(|t| t.text == "gorgon/shell-app/src"),
+            "the wide row did not draw the whole folder"
+        );
+
+        let header = TreeItem::new("r", "GOrgOn")
+            .header()
+            .compact()
+            .build(Vec::new());
+        assert_eq!(header.semantics.label.as_deref(), Some("GOrgOn"));
+        assert!(format!("{header:?}").contains("GORGON"));
+    }
+
     #[test]
     fn rows_pin_their_height_and_labels_align_across_branch_and_leaf() {
         let frame = petrify_lone(sample_tree());

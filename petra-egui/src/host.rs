@@ -1000,6 +1000,13 @@ pub struct Host<A: App> {
     /// The underline that interpolates between focus targets. Host-owned so
     /// it never enters petrify or the digest; see `focus_caret`.
     caret: FocusCaret,
+    /// Whether the last choice was a key rather than a pointer press. After a
+    /// press, a focused node that declares
+    /// [`gorgon_petra::tree::Semantics::focus_quiet_on_press`] draws no
+    /// indicator: its selection fill already marks it, and the pointer marks
+    /// where the eye is. Every other node draws its figure as before. Starts
+    /// true, so focus seated before any input is shown.
+    focus_visible: bool,
     /// Tessellated picture of the last full paint, without the caret. A hop
     /// replays these meshes instead of walking every placement; eframe
     /// tessellates `Shape::Mesh` by pointer, not by rebuilding glyph verts.
@@ -1394,6 +1401,7 @@ impl<A: App> Host<A> {
             pending_app_focus: None,
             selection_drag: false,
             caret: FocusCaret::new(),
+            focus_visible: true,
             scene: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             gpu: None,
@@ -2277,12 +2285,31 @@ impl<A: App> Host<A> {
         self.last_report = Some(report);
     }
 
+    /// Whether the focus indicator is withheld this frame: the last choice
+    /// was a press and the focused node asked for quiet after one.
+    fn focus_quiet(&self, frame: &PetrifiedFrame) -> bool {
+        !self.focus_visible
+            && frame
+                .placements
+                .iter()
+                .find(|p| p.semantics.focused)
+                .is_some_and(|p| p.semantics.focus_quiet_on_press)
+    }
+
     fn caret_overlay(&self, frame: &PetrifiedFrame) -> Option<CaretOverlay> {
         let scale = frame.viewport.scale;
         let page = egui::Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(frame.viewport.size.w, frame.viewport.size.h),
         );
+        if self.focus_quiet(frame) {
+            // Hidden, not absent: an absent overlay tells the painter to
+            // jump onto the focused node itself.
+            return Some(CaretOverlay {
+                picture: CaretPicture::Hidden,
+                clip: page,
+            });
+        }
         let clip = caret_clip_limit(self.caret.clip(), self.caret.is_moving(), page, scale);
         let bands = self.caret.bands()?;
         let picture = if self.caret.is_moving() {
@@ -2299,7 +2326,15 @@ impl<A: App> Host<A> {
 
     fn tick_caret(&mut self, frame: &PetrifiedFrame, now: f64) {
         let scale = frame.viewport.scale;
-        match focused_caret_target(frame) {
+        // A hidden indicator has no position to keep, so the first key after
+        // a press shows it where focus is instead of flying in from the last
+        // keyboard stop.
+        let target = if self.focus_quiet(frame) {
+            None
+        } else {
+            focused_caret_target(frame)
+        };
+        match target {
             Some(target) => {
                 self.caret.tick(
                     Some(crate::focus_caret::CaretDest {
@@ -2910,6 +2945,19 @@ impl<A: App> Host<A> {
             )
         }) {
             self.focus.operator_input();
+        }
+        // The last key or press decides whether the indicator shows. Text
+        // and paste come from keys too, so they count as keys.
+        for event in &translated {
+            match event {
+                InputEvent::Key { pressed: true, .. }
+                | InputEvent::Text(_)
+                | InputEvent::Paste(_) => {
+                    self.focus_visible = true;
+                }
+                InputEvent::PointerPressed { .. } => self.focus_visible = false,
+                _ => {}
+            }
         }
         let mut invalidate = false;
         // Routing needs a frame to hit-test against. The first pass has none,
@@ -5507,6 +5555,8 @@ mod tests {
         checkbox: bool,
         /// Mount a real `component::slider`, for the Adjust-value fill.
         slider: bool,
+        /// The filter declares `focus_quiet_on_press`, as a list row does.
+        quiet_filter: bool,
         /// Bind `label`'s text to `title` and its `disabled` to `flag` — one
         /// layout property and one paint property on one node, so the two
         /// dirty classes are separable (task R-2). Nothing else in the tree
@@ -5673,8 +5723,8 @@ mod tests {
                     text: Some("Fibers".into()),
                     ..Props::default()
                 }))
-                .child(
-                    ViewNode::new(NodeKind::Input, "filter")
+                .child({
+                    let filter = ViewNode::new(NodeKind::Input, "filter")
                         .with_props(Props {
                             placeholder: Some("Filter".into()),
                             ..Props::default()
@@ -5683,8 +5733,13 @@ mod tests {
                             Role::TextInput,
                             "Filter fibers",
                             &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
-                        ),
-                )
+                        );
+                    if self.quiet_filter {
+                        filter.with_focus_quiet_on_press()
+                    } else {
+                        filter
+                    }
+                })
                 .child(if self.hide_run {
                     ViewNode::new(NodeKind::Spacer, "gap")
                 } else {
@@ -6918,6 +6973,49 @@ mod tests {
                 )
             });
         assert_eq!(node.label(), Some("Run"));
+    }
+
+    /// A press on a node that declares `focus_quiet_on_press` draws no
+    /// focus indicator, and the next key draws it again. A press on any
+    /// other node keeps its figure, which is the Carbon picture a pressed
+    /// field shows. Focus itself moves the same way in both.
+    #[test]
+    fn a_press_quiets_the_focus_indicator_only_where_the_node_asks() {
+        for quiet in [false, true] {
+            let (ctx, mut host) = construct(Demo {
+                quiet_filter: quiet,
+                ..Demo::default()
+            });
+            settle(&ctx, &mut host, 4);
+            assert_eq!(host.report().expect("a report").focus_rings, 1);
+
+            let filter = host
+                .frame()
+                .expect("a frame")
+                .placements
+                .iter()
+                .find(|p| p.id == "/root/filter")
+                .expect("the filter is placed")
+                .rect;
+            let centre = egui::pos2(filter.x + filter.w / 2.0, filter.y + filter.h / 2.0);
+            step(&ctx, &mut host, press_at(centre));
+            settle(&ctx, &mut host, 24);
+            assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
+            assert_eq!(
+                host.report().unwrap().focus_rings,
+                usize::from(!quiet),
+                "quiet={quiet}: after a press"
+            );
+
+            step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+            settle(&ctx, &mut host, 24);
+            assert!(host.state().focused.is_some());
+            assert_eq!(
+                host.report().unwrap().focus_rings,
+                1,
+                "quiet={quiet}: a key moved focus and the indicator stayed hidden"
+            );
+        }
     }
 
     /// The frame the host paints must show where focus is. The ring is drawn
