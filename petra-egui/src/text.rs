@@ -976,7 +976,9 @@ fn wrapping(req: &TextRequest<'_>) -> (usize, bool, Option<char>) {
         // Wrapping prefers word boundaries. An ellipsis appears only when a
         // line cap forces the run to stop early — an uncapped wrap that runs
         // out of height is truncated by the parent, not here.
-        TextWrap::Wrap => (
+        // `WrapOrHide` shapes as `Wrap` does; layout shows none of it in a
+        // box too narrow for its shortest word.
+        TextWrap::Wrap | TextWrap::WrapOrHide => (
             req.max_lines.unwrap_or(usize::MAX).max(1),
             false,
             req.max_lines.map(|_| ELLIPSIS),

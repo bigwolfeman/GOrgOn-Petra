@@ -525,9 +525,14 @@ pub fn content_switcher_item_icon_popover_with_size(
     wrapped
 }
 
-/// The tab's label node: text, weight bumped on selection.
+/// The tab's label node: text, weight bumped on selection, one line ending
+/// in an ellipsis when the tab is narrower than it (Carbon's
+/// `.cds--content-switcher-btn`: `white-space: nowrap; text-overflow:
+/// ellipsis`). A wrapping label broke inside its word and the tab's pinned
+/// height cut the second line off, so `newline` read `newlin` with no sign.
 fn label_node(label: String, selected: bool, ink: &str) -> ViewNode {
     let mut node = super::text::text("label", label);
+    node.props.wrap = Some(crate::tree::TextWrap::Ellipsis);
     node.props.style = Some(t(if selected {
         TYPOGRAPHY_HEADING_SM
     } else {

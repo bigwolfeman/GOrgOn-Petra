@@ -92,6 +92,16 @@ fn text_request<'a>(props: &TextProps<'a>, available_width: Option<f32>) -> Text
 /// their glyph-wide floor.
 pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal) -> Size {
     let props = node.props.text();
+    // A `WrapOrHide` run offered too little to read shows nothing, so it
+    // takes nothing; its `Zero` answer is that nothing too, so a parent may
+    // squeeze it away before anything that loses words.
+    if props.wrap == TextWrap::WrapOrHide {
+        match proposal.horizontal {
+            Proposal::Zero => return Size::ZERO,
+            Proposal::Exact(offer) if hides_at(&props, ctx, offer) => return Size::ZERO,
+            _ => {}
+        }
+    }
     if props.wrap == TextWrap::Wrap && proposal.horizontal == Proposal::Zero {
         let word = ctx.content.min_content_width(&text_request(&props, None));
         return ctx.content.text(&text_request(&props, Some(word))).size;
@@ -165,12 +175,19 @@ pub fn place(
     // made a correctly-elided title indistinguishable from a corrupted panel,
     // and `semantic::audit`'s `TruncationIsReal` reads the result.
     let height = slot.rect.h.max(0.0);
-    let truncated = measurement.truncated;
-    let overflowed = measurement.size.h > height;
+    // A `WrapOrHide` run in a box too narrow to read draws nothing: its clip
+    // is empty and it says it is truncated.
+    let hidden = props.wrap == TextWrap::WrapOrHide && hides_at(&props, ctx, width);
+    let truncated = measurement.truncated || hidden;
+    let overflowed = !hidden && measurement.size.h > height;
 
     let id = path.id();
     let semantics = semantics_of(node, &id, ctx.state);
-    let clip = slot.clip.intersect(inked(slot.rect, measurement.ink));
+    let clip = if hidden {
+        Rect::new(slot.rect.x, slot.rect.y, 0.0, 0.0)
+    } else {
+        slot.clip.intersect(inked(slot.rect, measurement.ink))
+    };
     let index = sink.push(Placement {
         id,
         kind: node.kind,
@@ -190,7 +207,39 @@ pub fn place(
         semantics,
         parent: None,
     });
-    place_links(node, &props, &req, ctx, path, slot, clip, index, sink);
+    if !hidden {
+        place_links(node, &props, &req, ctx, path, slot, clip, index, sink);
+    }
+}
+
+/// How far under its floor a `WrapOrHide` run's box may fall and still show
+/// it: the same word measured twice can answer a fraction of a unit apart.
+const WORD_SLACK: f32 = 0.5;
+
+/// The readable measure a [`TextWrap::WrapOrHide`] run always shows in:
+/// ten zeros in the run's face, CSS's `10ch`.
+const READABLE: &str = "0000000000";
+
+/// Whether a [`TextWrap::WrapOrHide`] run shows nothing at `width`: the box
+/// is narrower than both the run's widest word and [`READABLE`].
+fn hides_at(props: &TextProps<'_>, ctx: &mut LayoutCtx<'_>, width: f32) -> bool {
+    let word = ctx.content.min_content_width(&text_request(props, None));
+    if width >= word - WORD_SLACK {
+        return false;
+    }
+    let readable = ctx
+        .content
+        .text(&TextRequest {
+            text: READABLE,
+            style: props.style,
+            wrap: TextWrap::Clip,
+            max_lines: None,
+            available_width: None,
+            runs: TextRuns::Plain,
+        })
+        .size
+        .w;
+    width < readable - WORD_SLACK
 }
 
 /// What a link run answers to, the same set `component::link` declares:
@@ -808,5 +857,58 @@ mod tests {
             sink.as_slice()[0].paint.content_hash,
             crate::frame::digest::hash_text(sample)
         );
+    }
+
+    /// A `WrapOrHide` run shows nothing in a box narrower than both its
+    /// widest word and ten zeros (80 units here): it measures zero there,
+    /// places an empty clip and says it is truncated, and a `Zero` probe
+    /// answers nothing so a parent may squeeze it away first. A box that
+    /// holds the widest word, or ten zeros, wraps it as `Wrap` does.
+    #[test]
+    fn a_wrap_or_hide_run_shows_nothing_in_a_box_too_narrow_to_read() {
+        let mut h = Harness::new();
+        // "active" is 48 units; "panel:invariants" is 128.
+        let short = text_node("is active", TextWrap::WrapOrHide, None);
+        let long = text_node("panel:invariants is shown", TextWrap::WrapOrHide, None);
+        let at = |h: &mut Harness<MonoContent, NoRows>, node: &ViewNode, w: f32| {
+            measure(
+                node,
+                &mut h.ctx(),
+                open(Proposal::Exact(w), Proposal::Unbounded),
+            )
+        };
+        assert_eq!(
+            at(&mut h, &short, 40.0),
+            Size::ZERO,
+            "narrower than its widest word"
+        );
+        assert_ne!(at(&mut h, &short, 48.0), Size::ZERO, "it holds every word");
+        assert_eq!(at(&mut h, &long, 60.0), Size::ZERO, "narrower than both");
+        let readable = at(&mut h, &long, 90.0);
+        let wrapped = measure(
+            &text_node("panel:invariants is shown", TextWrap::Wrap, None),
+            &mut h.ctx(),
+            open(Proposal::Exact(90.0), Proposal::Unbounded),
+        );
+        assert_eq!(readable, wrapped, "ten zeros wide, it wraps as Wrap does");
+        let zero = measure(
+            &short,
+            &mut h.ctx(),
+            open(Proposal::Zero, Proposal::Unbounded),
+        );
+        assert_eq!(zero, Size::ZERO);
+
+        let mut place_at = |w: f32| {
+            let mut path = path_at(&long);
+            let mut sink = PlacementList::new();
+            let slot = Slot::new(Rect::new(0.0, 0.0, w, 64.0));
+            place(&long, &mut h.ctx(), &mut path, slot, &mut sink);
+            sink.as_slice()[0].clone()
+        };
+        let hidden = place_at(45.0);
+        assert_eq!((hidden.clip.w, hidden.clip.h), (0.0, 0.0));
+        assert!(hidden.paint.truncated && !hidden.paint.overflowed);
+        let shown = place_at(90.0);
+        assert!(shown.clip.w > 0.0 && shown.clip.h > 0.0);
     }
 }
