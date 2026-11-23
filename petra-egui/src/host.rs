@@ -1092,6 +1092,11 @@ pub struct Host<A: App> {
     /// Whether each incremental frame is checked against a full one
     /// ([`Host::set_reuse_audit`]).
     audit_reuse: bool,
+    /// The audit's own measure cache, emptied before every full pass and
+    /// kept between them: a bounded cache allocates its tables once, for its
+    /// whole bound, so a fresh one per audited frame would allocate them on
+    /// every frame of a debug journey.
+    audit_cache: Option<MeasureCache>,
     /// What the last built frame did with each contribution.
     mounts: Vec<MountReport>,
     /// Host clock for the pass in progress, seconds. Written in [`Host::pass`]
@@ -1468,6 +1473,7 @@ impl<A: App> Host<A> {
             profile: None,
             last_reuse: ReuseStats::default(),
             audit_reuse: false,
+            audit_cache: None,
             mounts: Vec::new(),
             pass_clock: 0.0,
             slots: HeldValues::default(),
@@ -1706,6 +1712,9 @@ impl<A: App> Host<A> {
     /// frame those journeys produce.
     pub fn set_reuse_audit(&mut self, on: bool) {
         self.audit_reuse = on;
+        if !on {
+            self.audit_cache = None;
+        }
     }
 
     /// Measure every pass that builds a frame against `clock` (seconds since
@@ -1944,12 +1953,17 @@ impl<A: App> Host<A> {
         theme: &ThemeSnapshot,
         extents: &mut RowExtents,
     ) {
-        let mut cache = MeasureCache::with_capacity(self.cache.capacity());
+        let capacity = self.cache.capacity();
+        let cache = self
+            .audit_cache
+            .get_or_insert_with(|| MeasureCache::with_capacity(capacity));
+        cache.clear();
+        cache.set_capacity(capacity);
         let mut content = HostedContent::new(&mut self.shaper, &self.measurers, &self.images);
         let mut ctx_layout = LayoutCtx {
             content: &mut content,
             rows: &mut self.app,
-            cache: &mut cache,
+            cache,
             extents,
             state: &self.state,
             theme,

@@ -49,10 +49,55 @@
 //! lookup index both need to name an entry and a galley key owns a whole text
 //! run. Cloning the key into both would double the largest allocation in the
 //! map.
+//!
+//! # No call reallocates
+//!
+//! A bounded cache knows how big it gets, so it allocates for that once. A
+//! `HashMap` that grows by doubling rehashes every key inside the insert that
+//! crosses a size step, and a `Vec` that grows moves every entry. Either one
+//! is a stall proportional to the whole cache, landing inside one frame:
+//! measured 2026-11-23 on the GOrgOn shell, one measure-cache insert took
+//! 11.9 ms while the cache filled toward its 65 536 entries.
+//!
+//! Churn at the bound is the second half. Every miss at the bound is one
+//! eviction and one insert, and a `HashMap` that is more than half full turns
+//! a share of those removals into tombstones, until it rehashes in place or
+//! doubles to clear them (13.2 ms for one insert, in the same shell, long
+//! after the cache was full). Kept under half full, a removal almost always
+//! frees its bucket outright and the table never needs the rehash.
+//!
+//! So the first time the index or the slab needs room, it grows straight to
+//! its bound ([`reserve_index`]), with the index sized for twice the bound.
+//! The live set ([`LruCache::begin_pass`]) can still push a cache past its
+//! bound; past it, growth is the ordinary amortized doubling. A bound beyond
+//! [`EAGER_RESERVE_LIMIT`] is not reserved up front.
 
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
+
+/// The largest bound a cache reserves for up front ([`reserve_index`]). A
+/// host that sets a bound past it, as a stand-in for "unbounded", gets
+/// ordinary doubling growth instead of an allocation sized for a bound it
+/// never reaches.
+pub const EAGER_RESERVE_LIMIT: usize = 1 << 20;
+
+/// Make room for one more key in `index`, a map whose key count is bounded
+/// by `bound`.
+///
+/// Only acts when the next insert would reallocate anyway. Under the bound it
+/// grows the map to hold twice the bound (at most [`EAGER_RESERVE_LIMIT`]), so
+/// filling to the bound never rehashes again and churn at the bound keeps the
+/// table under half full. At or past the bound it leaves growth to the map.
+/// See the module documentation.
+pub fn reserve_index<K: Eq + Hash, V>(index: &mut HashMap<K, V>, bound: usize) {
+    let len = index.len();
+    if len < index.capacity() {
+        return;
+    }
+    let target = bound.min(EAGER_RESERVE_LIMIT).saturating_mul(2);
+    index.reserve(target.saturating_sub(len).max(1));
+}
 
 /// One live entry, plus its neighbours in the recency list.
 #[derive(Debug)]
@@ -120,8 +165,14 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
     /// Live entries ([`LruCache::begin_pass`]) stay until they stop being
     /// live.
     pub fn set_capacity(&mut self, capacity: usize) {
+        self.set_capacity_reporting(capacity, |_, _| {});
+    }
+
+    /// [`LruCache::set_capacity`], handing every entry it evicts to
+    /// `evicted`.
+    pub fn set_capacity_reporting(&mut self, capacity: usize, mut evicted: impl FnMut(&K, V)) {
         self.capacity = capacity.max(1);
-        self.trim();
+        self.trim(&mut evicted);
     }
 
     /// Mark the start of a new pass (one frame of the owner's work).
@@ -131,8 +182,13 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
     /// live with this call are trimmed now, oldest first, down to the cap.
     /// See the module documentation for the cliff this removes.
     pub fn begin_pass(&mut self) {
+        self.begin_pass_reporting(|_, _| {});
+    }
+
+    /// [`LruCache::begin_pass`], handing every entry it trims to `evicted`.
+    pub fn begin_pass_reporting(&mut self, mut evicted: impl FnMut(&K, V)) {
         self.pass += 1;
-        self.trim();
+        self.trim(&mut evicted);
     }
 
     /// Whether `slot` is live: touched in the current or the previous pass of
@@ -150,10 +206,10 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
     /// Evict the oldest entries until the cache is inside the cap or the
     /// oldest entry is live. Recency order means every entry newer than a live
     /// one is live too, so stopping at the first is exact.
-    fn trim(&mut self) {
+    fn trim(&mut self, evicted: &mut impl FnMut(&K, V)) {
         while self.len() > self.capacity
             && self.oldest.is_some_and(|slot| !self.live(slot))
-            && self.evict_oldest()
+            && self.evict_oldest(evicted)
         {}
     }
 
@@ -202,18 +258,33 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
     /// Store `value` under `key`, evicting the least recently used entry if
     /// the cache is full. An existing key keeps its slot and is refreshed.
     pub fn insert(&mut self, key: K, value: V) {
+        self.insert_reporting(key, value, |_, _| {});
+    }
+
+    /// [`LruCache::insert`], handing every entry it evicts to `evicted`, and
+    /// answering the stored key when `key` is new (`None` when it refreshed
+    /// an entry already held). An owner that keeps a side table keyed by
+    /// part of `K` keeps it in step through these two.
+    pub fn insert_reporting(
+        &mut self,
+        key: K,
+        value: V,
+        mut evicted: impl FnMut(&K, V),
+    ) -> Option<Arc<K>> {
         if let Some(&slot) = self.index.get(&key) {
             self.slots[slot]
                 .as_mut()
                 .expect("indexed slot is live")
                 .value = value;
             self.touch(slot);
-            return;
+            return None;
         }
         while self.len() >= self.capacity
             && self.oldest.is_some_and(|slot| !self.live(slot))
-            && self.evict_oldest()
+            && self.evict_oldest(&mut evicted)
         {}
+        self.reserve_slot();
+        reserve_index(&mut self.index, self.capacity);
         let key = Arc::new(key);
         let entry = Entry {
             key: Arc::clone(&key),
@@ -232,8 +303,25 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
                 self.slots.len() - 1
             }
         };
-        self.index.insert(key, slot);
+        self.index.insert(Arc::clone(&key), slot);
         self.link_newest(slot);
+        Some(key)
+    }
+
+    /// Room in the slab for one more entry: straight to the bound the first
+    /// time it fills, amortized doubling past the bound. See the module
+    /// documentation.
+    fn reserve_slot(&mut self) {
+        let len = self.slots.len();
+        if !self.free.is_empty() || len < self.slots.capacity() {
+            return;
+        }
+        let bound = self.capacity.min(EAGER_RESERVE_LIMIT);
+        if len < bound {
+            self.slots.reserve_exact(bound - len);
+        } else {
+            self.slots.reserve(1);
+        }
     }
 
     /// Keep only the entries `predicate` accepts. Recency order is preserved
@@ -249,7 +337,7 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
             })
             .collect();
         for slot in doomed {
-            self.remove_slot(slot);
+            drop(self.remove_slot(slot));
         }
     }
 
@@ -277,21 +365,24 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
     }
 
     /// Drop the least recently used entry. `false` when there was none.
-    fn evict_oldest(&mut self) -> bool {
+    fn evict_oldest(&mut self, evicted: &mut impl FnMut(&K, V)) -> bool {
         let Some(slot) = self.oldest else {
             return false;
         };
-        self.remove_slot(slot);
+        let entry = self.remove_slot(slot);
         self.evictions += 1;
+        evicted(&entry.key, entry.value);
         true
     }
 
-    /// Unlink `slot`, forget its key, and return the slot to the free list.
-    fn remove_slot(&mut self, slot: usize) {
+    /// Unlink `slot`, forget its key, return the slot to the free list, and
+    /// hand back what it held.
+    fn remove_slot(&mut self, slot: usize) -> Entry<K, V> {
         self.unlink(slot);
         let entry = self.slots[slot].take().expect("removed slot is live");
         self.index.remove(entry.key.as_ref());
         self.free.push(slot);
+        entry
     }
 
     /// Detach `slot` from the recency list, repairing both neighbours.
@@ -561,6 +652,48 @@ mod tests {
         }
         check_invariants(&cache);
         assert_eq!(cache.evictions(), 10_000 - 32);
+    }
+
+    /// Filling a cache to its bound and then churning through it, one
+    /// eviction per insert, never reallocates the index or the slab. A
+    /// reallocation rehashes or moves every entry inside one call, which is
+    /// a frame-length stall on a cache of tens of thousands of entries
+    /// (measured 2026-11-23: one measure-cache insert took 11.9 ms while the
+    /// cache filled, and 13.2 ms in a later steady-state churn).
+    #[test]
+    fn filling_to_the_bound_and_churning_never_reallocates() {
+        const BOUND: u32 = 4_096;
+        let mut cache = LruCache::with_capacity(BOUND as usize);
+        cache.insert(0, 0);
+        let index = cache.index.capacity();
+        let slab = cache.slots.capacity();
+        assert!(
+            index >= 2 * BOUND as usize,
+            "the first insert sizes the index for twice the bound, so the \
+             table stays under half full, got {index}"
+        );
+        assert!(
+            slab >= BOUND as usize,
+            "the slab holds the bound, got {slab}"
+        );
+        for pass in 0..64 {
+            cache.begin_pass();
+            for k in 0..BOUND / 4 {
+                probe(&mut cache, pass * BOUND + k + 1);
+            }
+            // `capacity` is entries plus the inserts left before the table
+            // must rehash. It never rises (no resize), and it never comes
+            // down to the entries held (the table never has to rehash).
+            let room = cache.index.capacity();
+            assert!(room <= index, "pass {pass}: the index grew to {room}");
+            assert!(
+                room > cache.index.len(),
+                "pass {pass}: the index is out of room and will rehash"
+            );
+            assert_eq!(cache.slots.capacity(), slab, "pass {pass}: the slab grew");
+        }
+        check_invariants(&cache);
+        assert_eq!(cache.len(), BOUND as usize);
     }
 
     /// Eviction order follows use, not insertion, over a long run.
