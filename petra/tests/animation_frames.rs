@@ -657,6 +657,50 @@ fn an_exiting_node_runs_its_track_and_then_leaves() {
     assert_eq!(after.placements, frame_of(&without, 3).placements);
 }
 
+/// A declared node with a subtree of its own, in a column beside many plain
+/// rows, exits whole: its children ride the exit and it re-enters under the
+/// parent it left. Only the declared subtree and its parent are kept from
+/// the frame before, so this is what that copy has to hold.
+#[test]
+fn an_exiting_subtree_beside_plain_rows_exits_whole() {
+    let text = |key: &str| {
+        ViewNode::new(NodeKind::Text, key).with_props(Props {
+            text: Some(key.into()),
+            ..Props::default()
+        })
+    };
+    let column = |with_toast: bool| {
+        let mut list = ViewNode::new(NodeKind::Stack, "list");
+        for n in 0..12 {
+            list = list.child(text(&format!("row-{n}")));
+        }
+        if with_toast {
+            list = list.child(
+                ViewNode::new(NodeKind::Stack, "toast")
+                    .with_transition("fade-out")
+                    .child(text("title"))
+                    .child(text("body")),
+            );
+        }
+        ViewNode::new(NodeKind::Stack, "app").child(list)
+    };
+    let mut scheduler = Scheduler::new(definitions());
+    tick(&mut scheduler, &column(true), 1, 0.0);
+    let frame = tick(&mut scheduler, &column(false), 2, TICK);
+    assert_eq!(
+        frame.digest,
+        gorgon_petra::frame::digest::digest(&frame.viewport, &frame.placements)
+    );
+    let index = |id: &str| frame.placements.iter().position(|p| p.id == id);
+    let toast = index("/app/list/toast").expect("the toast runs its exit");
+    let list = index("/app/list").expect("the list stays");
+    assert_eq!(frame.placements[toast].parent, Some(list));
+    for child in ["/app/list/toast/title", "/app/list/toast/body"] {
+        let at = index(child).unwrap_or_else(|| panic!("{child} left without its parent"));
+        assert_eq!(frame.placements[at].parent, Some(toast), "{child}");
+    }
+}
+
 /// The other exit rule: the node is simply gone on the frame it is removed.
 #[test]
 fn a_complete_instantly_exit_leaves_at_once() {

@@ -1021,9 +1021,18 @@ fn graft_rows(
             let mut moved = Vec::new();
             let row = ctx.extents.rows.graft(list, row, path, &mut moved);
             for id in moved {
-                for ancestor in KeyPath::ancestor_ids(&id) {
-                    if KeyPath::is_at_or_under(&ancestor, &row_id) {
-                        doomed.insert(ancestor);
+                // Every ancestor of `id` from its parent up to the row's own
+                // root, each a prefix of `id` ending before a separator.
+                // Copied only when not already doomed: the nodes of one row
+                // share their ancestors, and a new row names every node it
+                // holds.
+                for end in KeyPath::ancestor_ends(&id) {
+                    if end < row_id.len() {
+                        break;
+                    }
+                    let ancestor = &id[..end];
+                    if !doomed.contains(ancestor) {
+                        doomed.insert(ancestor.to_owned());
                     }
                 }
                 doomed.insert(id);

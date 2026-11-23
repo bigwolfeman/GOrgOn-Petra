@@ -561,8 +561,7 @@ impl TransitionEngine {
         previous_now: f64,
     ) -> bool {
         let mut changed = false;
-        let live: BTreeSet<&str> = raw.keys().map(String::as_str).collect();
-        self.nodes.retain(|id, _| live.contains(id.as_str()));
+        self.nodes.retain(|id, _| raw.contains_key(id));
 
         let count = frame.placements.len();
         // The translation each placement hands its subtree, and its clip
@@ -816,28 +815,32 @@ impl TransitionEngine {
         now: f64,
         previous_now: f64,
     ) -> bool {
-        let gone: Vec<&str> = previous
+        let left = |id: &str| previous.contains_key(id) && !raw.contains_key(id);
+        // Only a node that declared a transition can run an exit, so only the
+        // declared ones among the departed are looked at, in id order as the
+        // whole departed set would be.
+        let gone: Vec<String> = self
+            .declared
             .keys()
-            .map(String::as_str)
-            .filter(|id| !raw.contains_key(*id))
+            .filter(|id| left(id.as_str()))
+            .cloned()
             .collect();
         if gone.is_empty() {
             return false;
         }
-        let gone_set: BTreeSet<&str> = gone.iter().copied().collect();
         let mut created = false;
-        for id in &gone {
-            let Some(item) = self.rendered.get(*id) else {
+        for id in gone.iter().map(String::as_str) {
+            let Some(item) = self.rendered.get(id) else {
                 continue;
             };
             // Only the topmost node of a departing subtree forms a group; its
             // descendants come with it.
             if let Some(parent_id) = self.rendered_parent(id)
-                && gone_set.contains(parent_id.as_str())
+                && left(parent_id.as_str())
             {
                 continue;
             }
-            let Some(name) = self.declared.get(*id).cloned() else {
+            let Some(name) = self.declared.get(id).cloned() else {
                 continue;
             };
             let Some(def) = self.registry.get(&name) else {
@@ -874,7 +877,7 @@ impl TransitionEngine {
             // velocity, by the same rule a retarget does.
             let carried = self
                 .nodes
-                .get(*id)
+                .get(id)
                 .and_then(|t| t.get(&exit.property))
                 .map_or_else(|| AnimVector::zeros(recorded.len()), |t| t.velocity);
             let track = TrackState {
@@ -892,7 +895,7 @@ impl TransitionEngine {
                 // keep a departed subtree spliced into every later frame.
                 looping: false,
             };
-            self.nodes.remove(*id);
+            self.nodes.remove(id);
             self.exiting.push(ExitGroup {
                 items,
                 parents,
@@ -973,12 +976,46 @@ impl TransitionEngine {
         (items, parents)
     }
 
+    /// Record what the next frame's exits are built from.
+    ///
+    /// An exit forms only for a node that declared a transition
+    /// ([`TransitionEngine::collect_exits`]), and it reads that node's
+    /// subtree and the id of its parent ([`TransitionEngine::rendered_parent`],
+    /// the nearest ancestor id that was placed). So only those are kept:
+    /// every placement at or under a declared one, and each declared one's
+    /// nearest placed ancestor, rather than a copy of every placement and its
+    /// paint payload on every frame.
     fn snapshot_rendered(&mut self, frame: &PetrifiedFrame, declarations: &Declarations) {
         self.rendered.clear();
         self.declared.clear();
+        if declarations.is_empty() {
+            return;
+        }
+        let count = frame.placements.len();
+        // Pre-order with parents first, so a parent's flag is final when its
+        // children are read.
+        let mut under_declared = vec![false; count];
+        let mut keep = vec![false; count];
         for (index, placement) in frame.placements.iter().enumerate() {
+            let inherited = placement.parent.is_some_and(|p| under_declared[p]);
             if let Some(name) = declarations.get(&placement.id) {
                 self.declared.insert(placement.id.clone(), name.to_owned());
+                under_declared[index] = true;
+                // Ancestors come before a node in pre-order, deepest last, so
+                // the first one met walking back is the nearest.
+                let nearest = frame.placements[..index].iter().rposition(|p| {
+                    p.id != placement.id && KeyPath::is_at_or_under(&placement.id, &p.id)
+                });
+                if let Some(ancestor) = nearest {
+                    keep[ancestor] = true;
+                }
+            } else {
+                under_declared[index] = inherited;
+            }
+        }
+        for (index, placement) in frame.placements.iter().enumerate() {
+            if !(keep[index] || under_declared[index]) {
+                continue;
             }
             self.rendered.insert(
                 placement.id.clone(),
@@ -1290,6 +1327,57 @@ mod tests {
     use crate::tree::{NodeKind, ViewNode};
 
     use fixtures::definitions as slide_registry;
+
+    /// What a frame keeps for the next frame's exits is the declared
+    /// nodes' subtrees and each one's parent, not the whole frame: a list of
+    /// plain rows beside one declared toast keeps three placements.
+    #[test]
+    fn a_frame_keeps_only_what_an_exit_can_read() {
+        let text = |key: &str| {
+            ViewNode::new(NodeKind::Text, key).with_props(crate::tree::Props {
+                text: Some(key.to_owned()),
+                ..crate::tree::Props::default()
+            })
+        };
+        let mut list = ViewNode::new(NodeKind::Stack, "list");
+        for n in 0..30 {
+            list = list.child(text(&format!("row-{n}")));
+        }
+        let toast = ViewNode::new(NodeKind::Stack, "toast")
+            .with_transition("fade-out")
+            .child(text("label"));
+        let tree = ViewNode::new(NodeKind::Stack, "app")
+            .child(list)
+            .child(ViewNode::new(NodeKind::Stack, "corner").child(toast));
+        let declarations = Declarations::collect(&tree);
+        let mut frame = fixtures::frame(&tree, 1, 400.0, 2000.0);
+        assert!(frame.placements.len() > 30);
+        let mut engine = TransitionEngine::new(slide_registry());
+        engine.animate(&mut frame, &declarations, 0.0);
+        let kept: Vec<&str> = engine.rendered.keys().map(String::as_str).collect();
+        assert_eq!(
+            kept,
+            [
+                "/app/corner",
+                "/app/corner/toast",
+                "/app/corner/toast/label"
+            ]
+        );
+        assert_eq!(
+            engine
+                .declared
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["/app/corner/toast"]
+        );
+
+        // A frame that declares nothing keeps nothing.
+        let plain = ViewNode::new(NodeKind::Stack, "app").child(text("only"));
+        let mut frame = fixtures::frame(&plain, 2, 400.0, 200.0);
+        engine.animate(&mut frame, &Declarations::collect(&plain), 1.0 / 60.0);
+        assert!(engine.rendered.is_empty());
+    }
 
     #[test]
     fn declarations_key_on_the_same_ids_the_frame_carries() {

@@ -73,8 +73,21 @@
 //! [`EAGER_RESERVE_LIMIT`] is not reserved up front.
 
 use std::collections::HashMap;
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
+
+/// The hasher every layout cache's index uses.
+///
+/// The measure cache hashes a node's canonical id, usually more than a
+/// hundred bytes, on every lookup and insert. foldhash is several times
+/// faster than the standard library's SipHash on keys that long, and it is
+/// randomly seeded per map, so keys an outside party chooses (row keys, file
+/// names, transcript text) cannot be prepared to collide. See
+/// `.agents/notes/implemented/bug-fix/2026-11-23-scroll-frames-cost-what-they-change.md`.
+pub type CacheHasher = foldhash::fast::RandomState;
+
+/// A `HashMap` under [`CacheHasher`].
+pub type CacheMap<K, V> = HashMap<K, V, CacheHasher>;
 
 /// The largest bound a cache reserves for up front ([`reserve_index`]). A
 /// host that sets a bound past it, as a stand-in for "unbounded", gets
@@ -90,7 +103,7 @@ pub const EAGER_RESERVE_LIMIT: usize = 1 << 20;
 /// filling to the bound never rehashes again and churn at the bound keeps the
 /// table under half full. At or past the bound it leaves growth to the map.
 /// See the module documentation.
-pub fn reserve_index<K: Eq + Hash, V>(index: &mut HashMap<K, V>, bound: usize) {
+pub fn reserve_index<K: Eq + Hash, V, S: BuildHasher>(index: &mut HashMap<K, V, S>, bound: usize) {
     let len = index.len();
     if len < index.capacity() {
         return;
@@ -121,7 +134,7 @@ struct Entry<K, V> {
 /// indices instead of shifting a queue.
 #[derive(Debug)]
 pub struct LruCache<K: Eq + Hash, V> {
-    index: HashMap<Arc<K>, usize>,
+    index: CacheMap<Arc<K>, usize>,
     slots: Vec<Option<Entry<K, V>>>,
     free: Vec<usize>,
     newest: Option<usize>,
@@ -144,7 +157,7 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            index: HashMap::new(),
+            index: CacheMap::default(),
             slots: Vec::new(),
             free: Vec::new(),
             newest: None,

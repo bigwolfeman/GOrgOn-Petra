@@ -5,10 +5,10 @@
 //! makes that affordable, which is why it is part of the vocabulary module
 //! rather than an optimisation bolted on later.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 
-use crate::cache::{LruCache, reserve_index};
+use crate::cache::{CacheMap, LruCache, reserve_index};
 use crate::geom::{Axis, Scale, Size};
 use crate::tree::KeyPath;
 
@@ -248,7 +248,7 @@ pub struct MeasureCache {
     /// sweep: an id with nothing cached (most of what a scroll names) is
     /// skipped outright. Sized like the entries' index
     /// ([`crate::cache::reserve_index`]), so it never rehashes in a frame.
-    nodes: HashMap<String, NodeEntries>,
+    nodes: CacheMap<String, NodeEntries>,
     /// How many of `nodes` carry a mark. While none does, a lookup skips the
     /// node table.
     marked: usize,
@@ -320,7 +320,7 @@ impl MeasureCache {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: LruCache::with_capacity(capacity),
-            nodes: HashMap::new(),
+            nodes: CacheMap::default(),
             marked: 0,
             current: None,
             foreign: 0,
@@ -583,7 +583,7 @@ impl MeasureCache {
 /// node, mark and all, with its last entry. A mark only ever guarded entries
 /// stored before it, and none of those is held any more.
 fn release(
-    nodes: &mut HashMap<String, NodeEntries>,
+    nodes: &mut CacheMap<String, NodeEntries>,
     marked: &mut usize,
     current: &Option<(u64, Scale)>,
     foreign: &mut usize,
@@ -596,7 +596,7 @@ fn release(
 }
 
 /// One entry of `node` left the cache.
-fn forget(nodes: &mut HashMap<String, NodeEntries>, marked: &mut usize, node: &str) {
+fn forget(nodes: &mut CacheMap<String, NodeEntries>, marked: &mut usize, node: &str) {
     let entries = nodes.get_mut(node);
     debug_assert!(
         entries.is_some(),

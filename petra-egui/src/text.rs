@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::image::ImageSources;
+use egui::emath::{GUI_ROUNDING, GuiRounding};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Context, FontFamily, FontId, Galley};
 use gorgon_petra::cache::LruCache;
@@ -408,14 +409,26 @@ impl Typography {
     }
 }
 
+/// The parts of a resolved [`TextStyle`] that change a shaped run.
+///
+/// Fields rather than one formatted string: the key is built on every
+/// measurement and every paint of every run, cache hit or not.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct StyleKey {
+    size_bits: u32,
+    line_height_bits: Option<u32>,
+    family: FontFamily,
+    letter_spacing_bits: u32,
+}
+
 /// Everything that decides what a galley looks like.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct GalleyKey {
     text: String,
-    /// Size, family, and line height flattened into one comparable string:
-    /// two runs that differ in any of the three are two galleys. Bit
-    /// patterns, not values, for the same reason `wrap_bits` is.
-    style: String,
+    /// Size, line height, family and tracking: two runs that differ in any
+    /// of them are two galleys. Bit patterns, not values, for the same
+    /// reason `wrap_bits` is.
+    style: StyleKey,
     /// Bit pattern, not value: two wrap widths that differ in the last bit are
     /// two galleys, and comparing them as floats would return one for both.
     wrap_bits: u32,
@@ -616,6 +629,68 @@ impl GalleyShaper {
             .collect()
     }
 
+    /// The galley `key`'s request shapes to, built from the unbounded galley
+    /// already shaped for the same run when the request's `wrap_width` cannot
+    /// break it. `None` when it can, or when no unbounded galley is held.
+    ///
+    /// Layout asks for one string at its open width and then at the width
+    /// it was given, which is usually at least that wide; this answers the
+    /// second ask without shaping the string again. It follows egui 0.36's
+    /// own layout of a wrapped job step for step, and
+    /// `a_width_that_holds_the_open_run_draws_what_shaping_at_it_draws`
+    /// holds the two equal over a sweep of widths, so an egui upgrade that
+    /// changes either step fails there.
+    ///
+    /// 1. egui lays a job out at its wrap width rounded to a whole point
+    ///    (`GalleyCache::layout_internal`), and breaks a paragraph only when
+    ///    it is wider than that plus half a point when the job rounds its
+    ///    output (`LayoutJob::effective_wrap_width`). A run whose widest
+    ///    paragraph fits keeps every row, glyph, elision and mesh of its
+    ///    unbounded layout. Every job this shaper builds is left-aligned and
+    ///    unjustified, so nothing else in the layout reads the width.
+    /// 2. Rounding the output then caps the galley's box at the wrap width
+    ///    (`Galley::round_output_to_gui`). An unbounded box already inside
+    ///    the width is the answer as it stands; a wider one is the same
+    ///    galley with its right edge pulled in, exactly as egui pulls it.
+    ///
+    /// A galley answered as it stands keeps its own copy of its job, wrap
+    /// width included. Nothing in this crate reads that width back.
+    fn open_galley_that_fits(&mut self, key: &GalleyKey, wrap_width: f32) -> Option<Arc<Galley>> {
+        if !wrap_width.is_finite() {
+            return None;
+        }
+        let open = GalleyKey {
+            wrap_bits: f32::INFINITY.to_bits(),
+            ..key.clone()
+        };
+        let galley = Arc::clone(self.galleys.get(&open)?);
+        let width = wrap_width.round();
+        let rounds = galley.job.round_output_to_gui;
+        // `intrinsic_size()` is itself rounded to 1/32 of a point when the
+        // job rounds its output; the slack covers that rounding.
+        let breaks_past = if rounds {
+            width + 0.5 - GUI_ROUNDING
+        } else {
+            width
+        };
+        if galley.intrinsic_size().x > breaks_past {
+            return None;
+        }
+        if galley.rect.width() <= width {
+            return Some(galley);
+        }
+        if !rounds || galley.rect.width() > width + 1.0 {
+            // Neither can happen to a run that fits; shape rather than guess.
+            return None;
+        }
+        let mut capped = (*galley).clone();
+        capped.rect.max.x = capped.rect.max.x.min(capped.rect.min.x + width).floor_ui();
+        let mut job = (*capped.job).clone();
+        job.wrap.max_width = width;
+        capped.job = Arc::new(job);
+        Some(Arc::new(capped))
+    }
+
     /// The galley for `req`, shaping it if this is the first time.
     ///
     /// The painter calls this with the same request the measurement used, gets
@@ -660,13 +735,12 @@ impl GalleyShaper {
             // painter a run that was measured for the other one. That is the
             // exact failure this cache's "measure and paint the same galley"
             // rule exists to prevent.
-            style: format!(
-                "{}:{:?}:{:?}:{}",
-                style.font.size.to_bits(),
-                style.line_height.map(f32::to_bits),
-                style.font.family,
-                style.extra_letter_spacing.to_bits()
-            ),
+            style: StyleKey {
+                size_bits: style.font.size.to_bits(),
+                line_height_bits: style.line_height.map(f32::to_bits),
+                family: style.font.family.clone(),
+                letter_spacing_bits: style.extra_letter_spacing.to_bits(),
+            },
             wrap_bits: wrap_width.to_bits(),
             scale_bits: self.ctx.pixels_per_point().to_bits(),
             max_rows,
@@ -688,6 +762,11 @@ impl GalleyShaper {
         if let Some(hit) = self.galleys.get(&key) {
             self.reused += 1;
             return Arc::clone(hit);
+        }
+        if let Some(open) = self.open_galley_that_fits(&key, wrap_width) {
+            self.reused += 1;
+            self.galleys.insert(key, Arc::clone(&open));
+            return open;
         }
         self.shaped += 1;
         // Built section-by-hand rather than through `LayoutJob::simple`,
@@ -1677,6 +1756,96 @@ mod tests {
         let _third = s.galley(&r);
         assert_eq!(s.stats().0, 2, "clear() forces a fresh lookup");
         assert_eq!(s.stats().1, 2, "and it is not served from the local map");
+    }
+
+    /// What a galley draws: its box, its ink, its elision, its vertex count,
+    /// and each row's place, size, line break and glyphs.
+    #[derive(Debug, PartialEq)]
+    struct Drawn {
+        rect: egui::Rect,
+        ink: egui::Rect,
+        elided: bool,
+        vertices: usize,
+        rows: Vec<DrawnRow>,
+    }
+
+    /// One row: where it sits, its size, whether it ends a line, its glyphs.
+    type DrawnRow = (egui::Pos2, egui::Vec2, bool, Vec<(char, egui::Pos2)>);
+
+    fn drawn(galley: &Galley) -> Drawn {
+        Drawn {
+            rect: galley.rect,
+            ink: galley.mesh_bounds,
+            elided: galley.elided,
+            vertices: galley.num_vertices,
+            rows: galley
+                .rows
+                .iter()
+                .map(|row| {
+                    let glyphs = row.row.glyphs.iter().map(|g| (g.chr, g.pos)).collect();
+                    (row.pos, row.row.size, row.ends_with_newline, glyphs)
+                })
+                .collect(),
+        }
+    }
+
+    /// Layout asks for a run at its open width and then at the width it was
+    /// given. When the given width cannot break the run, the answer is built
+    /// from the open galley without shaping again, and it draws exactly what
+    /// shaping at that width draws: same box, rows, glyphs, elision and ink.
+    #[test]
+    fn a_width_that_holds_the_open_run_draws_what_shaping_at_it_draws() {
+        let h = Headless::new();
+        for (text, wrap) in [
+            ("line 811 as it was", TextWrap::Clip),
+            ("line 812 rewritten now", TextWrap::Clip),
+            ("line 811 as it was", TextWrap::Ellipsis),
+            ("a wrapping run of words", TextWrap::Wrap),
+            ("two\nparagraphs here", TextWrap::Wrap),
+        ] {
+            let mut s = h.shaper();
+            let open = s.galley(&req(text, None, wrap));
+            let natural = open.intrinsic_size().x;
+            // A wide offer, the common case, shapes nothing.
+            let wide = s.galley(&req(text, Some(natural + 40.0), wrap));
+            assert!(Arc::ptr_eq(&open, &wide), "{text:?} {wrap:?}");
+            assert_eq!(s.stats().0, 1, "{text:?} {wrap:?}");
+            for step in 0..64 {
+                // Every 1/32 of a point from just under the natural width to a
+                // point past it, then a much wider offer.
+                let width = if step == 63 {
+                    natural + 40.0
+                } else {
+                    natural - 0.25 + step as f32 / 32.0
+                };
+                let at = req(text, Some(width), wrap);
+                let given = s.galley(&at);
+                // A shaper that never saw the open run shapes at the width.
+                let fresh = h.shaper().galley(&at);
+                assert_eq!(drawn(&given), drawn(&fresh), "{text:?} {wrap:?} at {width}");
+            }
+            let (shaped, _) = s.stats();
+            assert!(
+                shaped < 32,
+                "{text:?} {wrap:?}: {shaped} of 64 widths shaped"
+            );
+        }
+    }
+
+    /// A width narrower than the open run breaks or cuts it, so it is shaped
+    /// at that width and draws differently.
+    #[test]
+    fn a_width_short_of_the_open_run_is_shaped_at_that_width() {
+        let h = Headless::new();
+        for wrap in [TextWrap::Clip, TextWrap::Ellipsis, TextWrap::Wrap] {
+            let mut s = h.shaper();
+            let text = "a run of several words";
+            let open = s.galley(&req(text, None, wrap));
+            let narrow = s.galley(&req(text, Some(open.intrinsic_size().x / 2.0), wrap));
+            assert!(!Arc::ptr_eq(&open, &narrow), "{wrap:?}");
+            assert_ne!(drawn(&open), drawn(&narrow), "{wrap:?}");
+            assert_eq!(s.stats().0, 2, "{wrap:?}");
+        }
     }
 
     /// A galley is shaped for a display scale: glyph advances are measured at

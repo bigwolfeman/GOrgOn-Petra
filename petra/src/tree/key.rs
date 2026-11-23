@@ -34,6 +34,17 @@ impl Key {
     #[must_use]
     pub fn escaped(&self) -> String {
         let mut out = String::with_capacity(self.0.len());
+        self.escape_into(&mut out);
+        out
+    }
+
+    /// [`Key::escaped`] appended to `out`. A key with nothing to escape is
+    /// one copy.
+    fn escape_into(&self, out: &mut String) {
+        if !self.0.contains(['\\', '/']) {
+            out.push_str(&self.0);
+            return;
+        }
         for ch in self.0.chars() {
             match ch {
                 '\\' => out.push_str("\\\\"),
@@ -41,7 +52,6 @@ impl Key {
                 other => out.push(other),
             }
         }
-        out
     }
 }
 
@@ -64,51 +74,95 @@ impl fmt::Display for Key {
 }
 
 /// The chain of keys from the root to a node.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct KeyPath(Vec<Key>);
+///
+/// The canonical id is kept alongside the keys and grown and cut with them,
+/// so [`KeyPath::id`] is one copy rather than a join, and [`KeyPath::as_id`]
+/// is none: a layout walk asks for the id of nearly every node it visits.
+/// See `.agents/notes/implemented/bug-fix/2026-11-23-scroll-frames-cost-what-they-change.md`.
+#[derive(Clone, Debug, Default)]
+pub struct KeyPath {
+    keys: Vec<Key>,
+    /// `/`-joined escaped keys: [`KeyPath::id`] without the root's lone `/`.
+    id: String,
+    /// `id`'s length before each key was pushed, one per key.
+    ends: Vec<usize>,
+}
+
+impl PartialEq for KeyPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.keys == other.keys
+    }
+}
+
+impl Eq for KeyPath {}
+
+impl std::hash::Hash for KeyPath {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.keys.hash(state);
+    }
+}
+
+impl PartialOrd for KeyPath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for KeyPath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.keys.cmp(&other.keys)
+    }
+}
 
 impl KeyPath {
     /// The empty path (the root's parent).
     #[must_use]
     pub fn root() -> Self {
-        Self(Vec::new())
+        Self::default()
     }
 
     /// This path with `key` appended.
     #[must_use]
     pub fn child(&self, key: &Key) -> Self {
-        let mut next = self.0.clone();
+        let mut next = self.clone();
         next.push(key.clone());
-        Self(next)
+        next
     }
 
     /// Append `key` in place. Pair with [`KeyPath::pop`] when walking a tree,
     /// which is why the walk does not allocate a path per node.
     pub fn push(&mut self, key: Key) {
-        self.0.push(key);
+        self.ends.push(self.id.len());
+        self.id.push('/');
+        key.escape_into(&mut self.id);
+        self.keys.push(key);
     }
 
     /// Remove the last segment.
     pub fn pop(&mut self) -> Option<Key> {
-        self.0.pop()
+        let key = self.keys.pop()?;
+        if let Some(end) = self.ends.pop() {
+            self.id.truncate(end);
+        }
+        Some(key)
     }
 
     /// The segments, root first.
     #[must_use]
     pub fn segments(&self) -> &[Key] {
-        &self.0
+        &self.keys
     }
 
     /// Number of segments.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.keys.len()
     }
 
     /// Whether this is the root path.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.keys.is_empty()
     }
 
     /// The canonical id string: escaped segments joined by `/`.
@@ -116,7 +170,13 @@ impl KeyPath {
     /// The root path prints as `/`, so an id is never the empty string.
     #[must_use]
     pub fn id(&self) -> String {
-        Self::join(self.0.iter())
+        self.as_id().to_owned()
+    }
+
+    /// [`KeyPath::id`], borrowed.
+    #[must_use]
+    pub fn as_id(&self) -> &str {
+        if self.id.is_empty() { "/" } else { &self.id }
     }
 
     /// The canonical id of the node keyed `key` in the same child list as
@@ -137,8 +197,8 @@ impl KeyPath {
     /// a usable node, which is the right answer: a root has no siblings.
     #[must_use]
     pub fn sibling_id(&self, key: &Key) -> String {
-        let parent = self.0.len().saturating_sub(1);
-        Self::join(self.0[..parent].iter().chain(std::iter::once(key)))
+        let parent = self.keys.len().saturating_sub(1);
+        Self::join(self.keys[..parent].iter().chain(std::iter::once(key)))
     }
 
     /// `/`-joined escaped `segments`; `/` alone for none.
@@ -146,7 +206,7 @@ impl KeyPath {
         let mut out = String::new();
         for key in segments {
             out.push('/');
-            out.push_str(&key.escaped());
+            key.escape_into(&mut out);
         }
         if out.is_empty() {
             out.push('/');
@@ -191,30 +251,35 @@ impl KeyPath {
     /// empty path, names no real node and is never returned here.
     #[must_use]
     pub fn ancestor_ids(id: &str) -> Vec<String> {
-        if !id.starts_with('/') {
-            return Vec::new();
-        }
-        let bytes = id.as_bytes();
+        Self::ancestor_ends(id)
+            .map(|end| id[..end].to_owned())
+            .collect()
+    }
+
+    /// Where each ancestor id of `id` ends, nearest parent first:
+    /// `id[..end]` is that ancestor's id. The same answer as
+    /// [`KeyPath::ancestor_ids`] without copying a string, for a caller that
+    /// keeps only some of them.
+    pub fn ancestor_ends(id: &str) -> impl Iterator<Item = usize> {
         let mut boundaries = Vec::new();
-        let mut i = 1; // the leading '/' is not itself a boundary
-        while i < bytes.len() {
-            match bytes[i] {
-                // A lone trailing backslash is a malformed escape; treat it
-                // as one byte rather than reading past the end.
-                b'\\' if i + 1 < bytes.len() => i += 2,
-                b'\\' => i += 1,
-                b'/' => {
-                    boundaries.push(i);
-                    i += 1;
+        if id.starts_with('/') {
+            let bytes = id.as_bytes();
+            let mut i = 1; // the leading '/' is not itself a boundary
+            while i < bytes.len() {
+                match bytes[i] {
+                    // A lone trailing backslash is a malformed escape; treat it
+                    // as one byte rather than reading past the end.
+                    b'\\' if i + 1 < bytes.len() => i += 2,
+                    b'\\' => i += 1,
+                    b'/' => {
+                        boundaries.push(i);
+                        i += 1;
+                    }
+                    _ => i += 1,
                 }
-                _ => i += 1,
             }
         }
-        boundaries
-            .into_iter()
-            .rev()
-            .map(|b| id[..b].to_owned())
-            .collect()
+        boundaries.into_iter().rev()
     }
 }
 
@@ -251,13 +316,17 @@ impl KeyPath {
             return None;
         }
         keys.push(Key::new(key));
-        Some(Self(keys))
+        let mut path = Self::root();
+        for key in keys {
+            path.push(key);
+        }
+        Some(path)
     }
 }
 
 impl fmt::Display for KeyPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.id())
+        f.write_str(self.as_id())
     }
 }
 
@@ -399,6 +468,82 @@ mod tests {
         assert_eq!(path.id(), "/a/b");
         assert_eq!(path.pop(), Some(Key::new("b")));
         assert_eq!(path.id(), "/a");
+    }
+
+    /// The id from scratch: escaped keys joined by `/`, the root a lone `/`.
+    fn joined(keys: &[Key]) -> String {
+        if keys.is_empty() {
+            return "/".to_owned();
+        }
+        keys.iter().map(|k| format!("/{}", k.escaped())).collect()
+    }
+
+    proptest::proptest! {
+        /// The id a path keeps beside its keys is the id its keys spell,
+        /// after any walk of pushes and pops, separators in keys included.
+        #[test]
+        fn the_kept_id_is_the_joined_id_after_any_walk(
+            steps in proptest::collection::vec(
+                proptest::option::of("[a/\\\\b]{0,3}"),
+                0..40,
+            )
+        ) {
+            let mut path = KeyPath::root();
+            let mut keys: Vec<Key> = Vec::new();
+            for step in steps {
+                match step {
+                    Some(key) => {
+                        path.push(Key::new(key.clone()));
+                        keys.push(Key::new(key));
+                    }
+                    None => {
+                        proptest::prop_assert_eq!(path.pop(), keys.pop());
+                    }
+                }
+                let want = joined(&keys);
+                proptest::prop_assert_eq!(path.id(), want.clone());
+                proptest::prop_assert_eq!(path.as_id(), want.as_str());
+                proptest::prop_assert_eq!(path.segments(), keys.as_slice());
+                // `parse` refuses an empty segment, so only a path with none
+                // round-trips.
+                if keys.iter().all(|k| !k.as_str().is_empty()) {
+                    proptest::prop_assert_eq!(KeyPath::parse(path.as_id()), Some(path.clone()));
+                }
+            }
+        }
+
+        /// `ancestor_ends` names the same ancestors `ancestor_ids` copies.
+        #[test]
+        fn ancestor_ends_are_where_ancestor_ids_end(
+            keys in proptest::collection::vec("[a/\\\\b]{1,3}", 0..8)
+        ) {
+            let mut path = KeyPath::root();
+            for key in keys {
+                path.push(Key::new(key));
+            }
+            let id = path.id();
+            let ends: Vec<String> = KeyPath::ancestor_ends(&id)
+                .map(|end| id[..end].to_owned())
+                .collect();
+            proptest::prop_assert_eq!(ends, KeyPath::ancestor_ids(&id));
+        }
+    }
+
+    /// Equality, order and hashing read the keys, never the kept id, so two
+    /// paths built differently are one path.
+    #[test]
+    fn two_walks_to_one_path_are_equal() {
+        use std::hash::{BuildHasher, RandomState};
+        let mut walked = KeyPath::root();
+        walked.push(Key::new("x"));
+        walked.pop();
+        walked.push(Key::new("a"));
+        walked.push(Key::new("b"));
+        let built = KeyPath::root().child(&Key::new("a")).child(&Key::new("b"));
+        assert_eq!(walked, built);
+        assert_eq!(walked.cmp(&built), std::cmp::Ordering::Equal);
+        let state = RandomState::new();
+        assert_eq!(state.hash_one(&walked), state.hash_one(&built));
     }
 }
 

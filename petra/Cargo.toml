@@ -10,6 +10,10 @@ publish = false
 
 [dependencies]
 blake3.workspace = true
+# The hasher of the layout caches, which hash a node id (often over a
+# hundred bytes) on every measurement. Randomly seeded, so a crafted key
+# set cannot be precomputed against it.
+foldhash.workspace = true
 serde.workspace = true
 # The component registry turns a wire parameter table into a `ViewNode`, and
 # the wire is JSON. Was a dev-dependency; promoted for

@@ -1707,6 +1707,7 @@ name = "gorgon-petra"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "foldhash",
  "proptest",
  "serde",
  "serde_json",
