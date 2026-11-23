@@ -5,7 +5,7 @@
 //! `Host::pass` makes every frame (`petra-egui/src/host.rs`); this isolates
 //! it from the UI host so the hazard the design accepts is visible on its
 //! own rather than buried inside a paint test.
-//! `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`
+//! `.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`
 //! §1: "A host that reports an incomplete change set ships a stale frame.
 //! That is the hazard this design accepts in exchange for the speed, and
 //! `ChangeSet::All` is the escape."

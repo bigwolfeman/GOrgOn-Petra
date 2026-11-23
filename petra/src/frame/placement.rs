@@ -739,7 +739,7 @@ pub trait PlacementSink {
     /// carries the rect the node *took*, which a container may make smaller
     /// than what it was *given*; only the offer decides whether re-placing
     /// the subtree would produce the same answer
-    /// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
+    /// (`.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`,
     /// condition 2). Storing the taken rect instead would silently accept a
     /// subtree whose parent moved the box around it.
     ///

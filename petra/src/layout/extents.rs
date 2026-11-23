@@ -323,6 +323,10 @@ pub struct RowExtents {
     lists: BTreeMap<String, ListExtents>,
     shifts: BTreeMap<String, f32>,
     revision: u64,
+    /// The rows each list fetched last, which the next fetch is grafted
+    /// onto so a row that changed under the same key is re-measured
+    /// ([`crate::layout::row_memo`]).
+    pub(crate) rows: crate::layout::row_memo::RowMemo,
 }
 
 impl RowExtents {
@@ -374,6 +378,7 @@ impl RowExtents {
     pub fn clear(&mut self) {
         self.lists.clear();
         self.shifts.clear();
+        self.rows.clear();
         self.revision += 1;
     }
 

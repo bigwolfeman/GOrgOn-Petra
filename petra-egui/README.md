@@ -63,3 +63,10 @@ mentions an egui type.
 - Every painted frame carries the `(seq, digest)` it was rasterized from, so a
   screenshot an agent captures can be tied back to the exact placements that
   produced it.
+- A slow frame explains itself: `Host::set_profile_clock(Some(clock))` records
+  each pass's split (`profile::PassProfile`: view, diff, validate, measure,
+  place, digest, motion, paint, cache hits and misses, placements reused and
+  placed), and `PassProfile::line` prints it.
+- A stale carried-over subtree cannot hide behind a valid digest in a test:
+  `Host::set_reuse_audit(true)` places every incremental frame again in full
+  and panics naming the first placement that differs.

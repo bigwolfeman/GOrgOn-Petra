@@ -51,16 +51,19 @@ use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
 use gorgon_petra::component::registry::bound::ExpandedTree;
 use gorgon_petra::component::{advance_ambient_skeletons, advance_ambient_spinners};
 use gorgon_petra::focus::FocusTree;
-use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
+use gorgon_petra::frame::{
+    FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify, petrify_with_memo,
+};
 use gorgon_petra::geom::{Axis, Point, Rect, Scale, Size};
 use gorgon_petra::input::{
     InputEvent, KeyCode, PointerButton, PointerRouting, PointerState, Route, RouteOutcome,
     TextSelection,
 };
 use gorgon_petra::layout::overlay_surface::{focus_taking_surfaces, surface_scopes};
+use gorgon_petra::layout::reuse::{FrameMemo, ReuseStats};
 use gorgon_petra::layout::{
-    AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowExtents, RowSource,
-    ScrollStack, TextRequest,
+    AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, PhaseProfile, RowExtents,
+    RowSource, ScrollStack, TextRequest,
 };
 use gorgon_petra::semantic::{
     ContributionId, ContributionLedger, ContributionStatus, PushOutcome, contribution_key,
@@ -76,7 +79,7 @@ use gorgon_petra::tree::{
 };
 use gorgon_petra::tree::{
     Behaviour, InputPolicy, InsetRefs, Intent, Interaction, KeyPath, NodeKind, Phase, Props,
-    Registry, TextWrap, ValidatedTree, ViewNode, validate,
+    Registry, TextWrap, ValidatedTree, ViewNode, graft_shared, validate,
 };
 
 use crate::dispatch::{self, Claim, Dispatcher, InputDecision, KeymapEvent};
@@ -87,6 +90,7 @@ use crate::paint::{
     CaretOverlay, CaretPicture, CustomPainters, PaintReport, caret_bands, caret_clip_limit,
     focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
 };
+use crate::profile::{PassProfile, Stopwatch};
 use crate::schedule::FrameMotion;
 use crate::text::{CustomMeasurers, FontFaces, GalleyShaper, HostedContent, Typography};
 
@@ -172,8 +176,16 @@ pub trait App: RowSource {
     /// different picture answers differently from [`App::view`].
     fn handle(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>);
     /// What changed behind [`App::view`] since the last call, draining it in
-    /// the same motion. Must name (directly or via [`ChangeSet::All`]) every
-    /// node whose measured content this frame would answer differently for.
+    /// the same motion.
+    ///
+    /// The host grafts every new view onto the last one and finds the nodes
+    /// that moved in the tree itself, and the engine does the same for a
+    /// collection's rows. So this names only what neither can see: a node
+    /// whose measured size depends on something outside the tree (a custom
+    /// measurer reading shared state, say), or [`ChangeSet::All`] when that
+    /// is unknown. An application whose every change is in its tree answers
+    /// [`ChangeSet::in_tree`]. [`ChangeSet::None`] says more: nothing moved
+    /// at all, so a caret flight may skip asking for a view.
     fn take_changes(&mut self) -> ChangeSet;
     /// A node's declared [`Behaviour`] fired.
     ///
@@ -1044,6 +1056,31 @@ pub struct Host<A: App> {
     /// any contribution was mounted into it. A caret flight compares a new
     /// view against it ([`Host::flight_view`]).
     last_authored: Option<ViewNode>,
+    /// The tree the last frame was placed from, contributions mounted. The
+    /// next view is grafted onto it ([`graft_shared`]): what moved is named
+    /// for invalidation, and every subtree that did not keeps this tree's
+    /// allocation, which is what lets `memo` carry it over.
+    last_tree: Option<Arc<ViewNode>>,
+    /// The last petrified frame, taken apart for the next one to reuse
+    /// (`gorgon_petra::layout::reuse`). The frame as petrified, before
+    /// transitions rewrote it into what was painted: reuse copies placements,
+    /// and an interpolated placement is not one the engine would produce.
+    memo: Option<FrameMemo>,
+    /// A measurement input outside the tree moved (fonts, the typography
+    /// map, a custom measurer, an image source): the next pass treats the
+    /// application's change set as [`ChangeSet::All`].
+    content_stale: bool,
+    /// [`ImageSources::revision`] as the last frame measured against it.
+    images_seen: u64,
+    /// The clock [`Host::pass_profile`] is measured with, if any.
+    profile_clock: Option<fn() -> f64>,
+    /// The split of the last pass that built a frame.
+    profile: Option<PassProfile>,
+    /// What the last petrify carried over.
+    last_reuse: ReuseStats,
+    /// Whether each incremental frame is checked against a full one
+    /// ([`Host::set_reuse_audit`]).
+    audit_reuse: bool,
     /// What the last built frame did with each contribution.
     mounts: Vec<MountReport>,
     /// Host clock for the pass in progress, seconds. Written in [`Host::pass`]
@@ -1410,6 +1447,14 @@ impl<A: App> Host<A> {
             // `false` here would be a second claim about the same fact.
             prepared_stale: true,
             last_authored: None,
+            last_tree: None,
+            memo: None,
+            content_stale: false,
+            images_seen: 0,
+            profile_clock: None,
+            profile: None,
+            last_reuse: ReuseStats::default(),
+            audit_reuse: false,
             mounts: Vec::new(),
             pass_clock: 0.0,
             slots: HeldValues::default(),
@@ -1515,6 +1560,7 @@ impl<A: App> Host<A> {
         let report = crate::fonts::install_desktop_fallbacks(ctx);
         self.shaper.clear();
         self.cache.clear();
+        self.content_stale = true;
         report
     }
 
@@ -1590,6 +1636,10 @@ impl<A: App> Host<A> {
         // be *served* — but it can no longer be asked for either, and would
         // sit in the bound taking a slot from a live run.
         self.shaper.clear();
+        // The measure cache is keyed by theme revision, which a typography
+        // change from `set_font_faces` does not move. Every size a carried
+        // subtree holds was taken through the old map.
+        self.content_stale = true;
     }
 
     /// The painter registry for `custom` kinds — register a painter before the
@@ -1617,12 +1667,56 @@ impl<A: App> Host<A> {
     /// separate as `registry_mut` and `painters_mut` already are: one makes
     /// a tree acceptable, the other makes it take room.
     pub fn measurers_mut(&mut self) -> &mut CustomMeasurers {
+        // A measurer registered or replaced answers differently for nodes
+        // whose tree did not move, so the next pass measures everything.
+        self.content_stale = true;
         &mut self.measurers
     }
 
     /// The image source registry.
     pub fn images_mut(&mut self) -> &mut ImageSources {
+        // No staleness flag here: hosts call this every pass to sync their
+        // registrations, and most passes change nothing. `Host::pass`
+        // compares `ImageSources::revision` instead.
         &mut self.images
+    }
+
+    /// Check every frame that carried subtrees over against a full petrify
+    /// of the same tree from a cold cache, and panic naming the first
+    /// placement that differs.
+    ///
+    /// For tests. It doubles the cost of every incremental frame, and it is
+    /// the one check that sees a stale carry-over: the digest of a wrong
+    /// incremental frame is internally consistent, because the engine agrees
+    /// with itself. A suite that runs real journeys with this on is a
+    /// differential test of reuse against the full negotiation on every
+    /// frame those journeys produce.
+    pub fn set_reuse_audit(&mut self, on: bool) {
+        self.audit_reuse = on;
+    }
+
+    /// Measure every pass that builds a frame against `clock` (seconds since
+    /// any fixed origin), and keep the split for [`Host::pass_profile`].
+    /// `None` stops measuring; nothing is read while it is off.
+    pub fn set_profile_clock(&mut self, clock: Option<fn() -> f64>) {
+        self.profile_clock = clock;
+        if clock.is_none() {
+            self.profile = None;
+        }
+    }
+
+    /// Where the last pass that built a frame spent its time, when a clock
+    /// is installed ([`Host::set_profile_clock`]).
+    #[must_use]
+    pub fn pass_profile(&self) -> Option<&PassProfile> {
+        self.profile.as_ref()
+    }
+
+    /// What the last petrify carried over from the frame before it, and what
+    /// it placed itself. All zero when it had nothing to reuse.
+    #[must_use]
+    pub fn reuse_stats(&self) -> ReuseStats {
+        self.last_reuse
     }
 
     /// The application.
@@ -1739,11 +1833,18 @@ impl<A: App> Host<A> {
     /// `ValidatedTree` is `Copy` — once it has corrected `self.state`
     /// (a scroll offset, or which node is focused) rather than paint a
     /// frame that still names an off-screen node as focused.
+    ///
+    /// `changes` is this pass's change set when the frame may carry subtrees
+    /// over from `memo`, and `None` when it may not (a refused tree, which
+    /// is not the tree the memo's placements came from). `profile` collects
+    /// the engine's own split when the pass is being measured.
     fn petrify_frame(
         &mut self,
         tree: ValidatedTree<'_>,
         viewport: Viewport,
         theme: &ThemeSnapshot,
+        changes: Option<&ChangeSet>,
+        profile: &mut Option<PassProfile>,
     ) -> PetrifiedFrame {
         // The shaper stays a concrete field — `Host::shaper`'s cache-stats
         // and typography-map callers, and every internal caller that binds
@@ -1766,20 +1867,140 @@ impl<A: App> Host<A> {
             scroll: ScrollStack::new(),
             reuse: None,
             anchors: AnchorRects::new(),
+            profile: profile.as_ref().map(|p| PhaseProfile::new(p.petrify.clock)),
         };
-        petrify(
-            self.counter.take(),
+        // The dirty set is derived per call, not per pass: a focus
+        // correction moved `self.state` since the last call, and the memo
+        // has to see that move to re-place both ends of it.
+        let dirty = self
+            .memo
+            .as_ref()
+            .zip(changes)
+            .and_then(|(memo, changes)| memo.dirty_ids(changes, &self.state));
+        let seq = self.counter.take();
+        // The ledger as this petrify finds it, for the audit's full pass to
+        // start from: the incremental pass records into the real one.
+        let audit_extents =
+            (self.audit_reuse && dirty.is_some()).then(|| ctx_layout.extents.clone());
+        // The real count is not known until the transitions have been
+        // advanced, and they are advanced against the placements this call
+        // produces. So the frame is petrified settled and
+        // `FrameMotion::advance` writes the measured activity onto it below,
+        // along with the placements that are actually on screen and the
+        // digest of them.
+        let settled = TransitionActivity::default();
+        let frame = match (self.memo.as_ref(), dirty.as_ref()) {
+            (Some(memo), Some(dirty)) => {
+                let (frame, stats) =
+                    petrify_with_memo(seq, tree, &mut ctx_layout, memo, dirty, viewport, settled);
+                self.last_reuse = stats;
+                frame
+            }
+            _ => {
+                self.last_reuse = ReuseStats::default();
+                petrify(seq, tree, &mut ctx_layout, viewport, settled)
+            }
+        };
+        // The context's borrows of the shaper, the cache and the extents end
+        // here, which is what lets the audit below borrow them again.
+        let phases = ctx_layout.profile;
+        if let Some(mut extents) = audit_extents {
+            self.audit_against_full(&frame, tree, viewport, theme, &mut extents);
+        }
+        if let (Some(pass), Some(phases)) = (profile.as_mut(), phases) {
+            pass.petrify.docks += phases.docks;
+            pass.petrify.measure += phases.measure;
+            pass.petrify.place += phases.place;
+            pass.petrify.resolve += phases.resolve;
+            pass.petrify.digest += phases.digest;
+            pass.petrifies += 1;
+            pass.reused_nodes = self.last_reuse.reused_nodes;
+            pass.replaced_nodes = self.last_reuse.replaced_nodes;
+        }
+        frame
+    }
+
+    /// Place `tree` again from nothing (a cold measure cache, `extents` as
+    /// the incremental pass found it, no memo) and panic naming the first
+    /// placement where `frame` differs. See [`Host::set_reuse_audit`].
+    fn audit_against_full(
+        &mut self,
+        frame: &PetrifiedFrame,
+        tree: ValidatedTree<'_>,
+        viewport: Viewport,
+        theme: &ThemeSnapshot,
+        extents: &mut RowExtents,
+    ) {
+        let mut cache = MeasureCache::with_capacity(self.cache.capacity());
+        let mut content = HostedContent::new(&mut self.shaper, &self.measurers, &self.images);
+        let mut ctx_layout = LayoutCtx {
+            content: &mut content,
+            rows: &mut self.app,
+            cache: &mut cache,
+            extents,
+            state: &self.state,
+            theme,
+            theme_rev: viewport.theme_rev,
+            scale: viewport.scale,
+            scroll: ScrollStack::new(),
+            reuse: None,
+            anchors: AnchorRects::new(),
+            profile: None,
+        };
+        let full = petrify(
+            frame.seq,
             tree,
             &mut ctx_layout,
             viewport,
-            // The real count is not known until the transitions have been
-            // advanced, and they are advanced against the placements this
-            // call produces. So the frame is petrified settled and
-            // `FrameMotion::advance` writes the measured activity onto it
-            // below, along with the placements that are actually on
-            // screen and the digest of them.
             TransitionActivity::default(),
-        )
+        );
+        if let Some(defect) = first_difference(frame, &full) {
+            panic!(
+                "reuse audit: the incremental frame is not the frame a full petrify places                  ({} reused, {} placed): {defect}",
+                self.last_reuse.reused_nodes, self.last_reuse.replaced_nodes
+            );
+        }
+    }
+
+    /// Graft this pass's mounted tree onto the last one and fold what moved
+    /// into the application's change set.
+    ///
+    /// The application rebuilds its tree from its state every pass (D-075),
+    /// so a node it did not touch still arrives as a new allocation. The
+    /// graft compares each node with its counterpart by key, hands back the
+    /// old `Arc` for every subtree that is equal, and names the nodes whose
+    /// own fields or child lists differ. Those names invalidate the measure
+    /// cache here, and join the application's own set so `FrameMemo` re-places
+    /// them. Everything else is measured from the cache and carried over.
+    ///
+    /// [`ChangeSet::All`] skips the graft: it already clears everything, and
+    /// there is nothing to carry.
+    fn graft_view(&mut self, tree: ViewNode, changes: ChangeSet) -> (Arc<ViewNode>, ChangeSet) {
+        let tree = Arc::new(tree);
+        if matches!(changes, ChangeSet::All) {
+            return (tree, ChangeSet::All);
+        }
+        let mut moved = Vec::new();
+        let tree = graft_shared(
+            self.last_tree.as_ref(),
+            tree,
+            &mut KeyPath::root(),
+            &mut moved,
+        );
+        if moved.is_empty() {
+            return (tree, changes);
+        }
+        let moved: BTreeSet<String> = moved.into_iter().collect();
+        let mut ids = match changes {
+            ChangeSet::Nodes(ids) => ids,
+            ChangeSet::None | ChangeSet::All => BTreeSet::new(),
+        };
+        let moved = ChangeSet::Nodes(moved);
+        self.cache.apply(&moved);
+        if let ChangeSet::Nodes(moved) = moved {
+            ids.extend(moved);
+        }
+        (tree, ChangeSet::Nodes(ids))
     }
 
     /// Run one whole pass: input, view, petrify, paint, schedule.
@@ -1793,6 +2014,9 @@ impl<A: App> Host<A> {
     /// host without a window. Interactive windows call [`Self::pass_in_window`]
     /// so the GPU cache can attach.
     pub fn pass(&mut self, ctx: &Context) {
+        let mut watch = Stopwatch::start(self.profile_clock);
+        let mut profile = self.profile_clock.map(PassProfile::new);
+        let (hits_before, misses_before) = self.cache.stats();
         // Before the snapshot is read, not after: a theme asked for on the
         // last pass has to be in force for this one, or the frame the
         // operator sees is one behind his own click.
@@ -1892,6 +2116,19 @@ impl<A: App> Host<A> {
         // value on screen and in the semantic tree for the rest of the
         // flight.
         let changes = self.app.take_changes();
+        // A measurement input that lives outside the tree moved since the
+        // last frame: whatever the application says, every size and every
+        // carried placement may be stale.
+        let images = self.images.revision();
+        let changes = if std::mem::take(&mut self.content_stale) || images != self.images_seen {
+            self.images_seen = images;
+            ChangeSet::All
+        } else {
+            changes
+        };
+        if matches!(changes, ChangeSet::All) {
+            self.memo = None;
+        }
         // Theme and scale are global inputs to every measurement, so a change
         // to either invalidates wholesale; content changes are the
         // application's change set, applied here so no host wiring can skip
@@ -1910,6 +2147,13 @@ impl<A: App> Host<A> {
         if self.can_reuse_frame(&viewport, had_input) {
             match self.flight_view(&changes) {
                 None => {
+                    // A declared id this pass consumed and no frame placed
+                    // would never reach the memo: the next frame could carry
+                    // that node over. An empty set declared nothing beyond
+                    // the tree, and the tree did not move.
+                    if matches!(&changes, ChangeSet::Nodes(ids) if !ids.is_empty()) {
+                        self.memo = None;
+                    }
                     self.paint_caret_on_last_frame(ctx, snapshot.as_ref());
                     return;
                 }
@@ -1922,9 +2166,22 @@ impl<A: App> Host<A> {
         // node the application declares, so there is nothing to mount into
         // until the application has answered. Each contribution was expanded
         // and accepted when it was set; this splices the results.
+        if let Some(p) = profile.as_mut() {
+            p.input = watch.lap();
+        }
         let authored = authored.unwrap_or_else(|| self.app.view());
+        if let Some(p) = profile.as_mut() {
+            p.view = watch.lap();
+        }
         self.last_authored = Some(authored.clone());
         let app_tree = self.mount_contributions(authored);
+        if let Some(p) = profile.as_mut() {
+            p.mount = watch.lap();
+        }
+        let (app_tree, changes) = self.graft_view(app_tree, changes);
+        if let Some(p) = profile.as_mut() {
+            p.diff = watch.lap();
+        }
         // `refusal_view` only exists to be assigned into on the error arm
         // below; the `let` with no initializer is what lets the borrow
         // minted there outlive the `match` (a binding declared outside the
@@ -1932,6 +2189,7 @@ impl<A: App> Host<A> {
         // call that decided Ok/Err — the happy path pays for exactly one
         // walk of the tree, not two.
         let refusal_tree;
+        let mut refused = false;
         let tree = match validate(&app_tree, &self.registry) {
             Ok(validated) => validated,
             // A refused tree is a bug in the application, and the operator
@@ -1951,6 +2209,7 @@ impl<A: App> Host<A> {
             // fallback view this crate paints when *that* vocabulary refuses
             // a tree must not itself depend on it.
             Err(errors) => {
+                refused = true;
                 refusal_tree = refusal_view(&errors.to_string());
                 validate(
                     &refusal_tree,
@@ -1960,6 +2219,16 @@ impl<A: App> Host<A> {
             }
         };
 
+        if let Some(p) = profile.as_mut() {
+            p.validate = watch.lap();
+        }
+        // A refused tree is not the one the memo or the graft base describe,
+        // and the refusal view is not the application's tree: the next pass
+        // starts both from nothing rather than carry a frame across it.
+        let reuse = (!refused).then_some(&changes);
+        if refused {
+            self.memo = None;
+        }
         let scopes = surface_scopes(&tree);
         let taking = focus_taking_surfaces(&tree);
         // Read before any reconciliation below can move it: this is where
@@ -1979,7 +2248,7 @@ impl<A: App> Host<A> {
         // the same frame again.
         self.cache.begin_pass();
         self.shaper.begin_pass();
-        let mut frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
+        let mut frame = self.petrify_frame(tree, viewport, snapshot.as_ref(), reuse, &mut profile);
 
         // `state.focused` was set from the *last* pass's reconciliation,
         // against the *last* pass's geometry. Nothing about this pass's own
@@ -2013,7 +2282,7 @@ impl<A: App> Host<A> {
             if let Some(id) = self.state.focused.clone()
                 && self.scroll_into_view(&frame, &id)
             {
-                frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
+                frame = self.petrify_frame(tree, viewport, snapshot.as_ref(), reuse, &mut profile);
             }
             if frame
                 .placements
@@ -2022,9 +2291,27 @@ impl<A: App> Host<A> {
             {
                 self.focus = self.focus.update(&frame.placements, &scopes);
                 if self.publish_focus() {
-                    frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
+                    frame =
+                        self.petrify_frame(tree, viewport, snapshot.as_ref(), reuse, &mut profile);
                 }
             }
+        }
+        // The frame as petrified, against the state it read, is what the
+        // next pass compares against. Kept before transitions rewrite it.
+        self.memo = (!refused).then(|| {
+            FrameMemo::adopt(
+                Arc::clone(&app_tree),
+                frame.clone(),
+                self.state.clone(),
+                viewport.theme_rev,
+                viewport.scale,
+            )
+        });
+        self.last_tree = (!refused).then(|| Arc::clone(&app_tree));
+        if let Some(p) = profile.as_mut() {
+            // The petrify calls ran inside this lap and are counted on their
+            // own; what is left is the walks around them.
+            p.around = watch.lap() - p.petrify.total();
         }
 
         // Layout negotiated the targets; this interpolates the result and
@@ -2043,6 +2330,9 @@ impl<A: App> Host<A> {
         }
 
         let decision = self.motion.advance(ctx, &mut frame, &tree);
+        if let Some(p) = profile.as_mut() {
+            p.motion = watch.lap();
+        }
 
         // Tick against the frame about to be painted, not the post-petrify
         // reconciliation: Tab is published before petrify, so this pass
@@ -2050,6 +2340,9 @@ impl<A: App> Host<A> {
         let now = ctx.input(|input| input.time);
         self.tick_caret(&frame, now);
         let mut report = self.paint_and_bake_scene(ctx, &frame, snapshot.as_ref());
+        if let Some(p) = profile.as_mut() {
+            p.paint = watch.lap();
+        }
         // A Tab scrolling toward an off-screen target leaves the old focus
         // off screen for the passes the scroll takes. Say so in the report
         // instead of failing the pass, and only while that Tab is in flight.
@@ -2184,6 +2477,14 @@ impl<A: App> Host<A> {
         // breaks that Petra cannot prevent, and an operator who cannot read
         // the count has no way to find out. See `Host::decision`.
         self.last_motion = Some(decision);
+        if let Some(mut p) = profile {
+            p.after = watch.lap();
+            p.total = watch.since_start();
+            let (hits, misses) = self.cache.stats();
+            p.measure_hits = hits - hits_before;
+            p.measure_misses = misses - misses_before;
+            self.profile = Some(p);
+        }
     }
 
     /// Whether this pass can paint the last petrified picture with a new
@@ -5046,6 +5347,50 @@ fn composed_vocabulary(theme: &Theme, extra: &Vocabulary) -> Vocabulary {
 #[must_use]
 pub fn default_presenter() -> Presenter {
     Presenter::new(gorgon_petra::token::dark())
+}
+
+/// Where two frames of the same tree differ, in words, or `None` when they
+/// are the same frame (the sequence number aside).
+///
+/// Placements first, in order, because a stale carried-over subtree shows up
+/// there by name; then paint payloads, subtree hashes and the digest, which
+/// can only differ without a placement differing if a payload went stale.
+fn first_difference(a: &PetrifiedFrame, b: &PetrifiedFrame) -> Option<String> {
+    for (index, (x, y)) in a.placements.iter().zip(&b.placements).enumerate() {
+        if x != y {
+            return Some(format!(
+                "placement {index} ({}): carried {x:?}, full {y:?}",
+                x.id
+            ));
+        }
+    }
+    if a.placements.len() != b.placements.len() {
+        let longer = if a.placements.len() > b.placements.len() {
+            &a.placements
+        } else {
+            &b.placements
+        };
+        let extra = &longer[a.placements.len().min(b.placements.len())];
+        return Some(format!(
+            "{} placements carried, {} placed in full; first unmatched {}",
+            a.placements.len(),
+            b.placements.len(),
+            extra.id
+        ));
+    }
+    for (index, (x, y)) in a.content.iter().zip(&b.content).enumerate() {
+        if x != y {
+            return Some(format!(
+                "paint content {index} ({}): carried {x:?}, full {y:?}",
+                a.placements[index].id
+            ));
+        }
+    }
+    if a.subtree_hashes != b.subtree_hashes || a.subtree_len != b.subtree_len || a.slots != b.slots
+    {
+        return Some("subtree hashes, lengths or slots differ".to_owned());
+    }
+    (a.digest != b.digest).then(|| format!("digest {:?} against {:?}", a.digest, b.digest))
 }
 
 #[cfg(test)]

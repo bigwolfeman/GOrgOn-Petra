@@ -551,6 +551,15 @@ fn materialize(
     let offset = origin_along(slot.clip, axis) - origin_along(slot.rect, axis);
     let origin = origin_along(slot.rect, axis);
 
+    // What `measure_collection` answered for this list on this pass (or
+    // would have), read before `open` can reset or resize the ledger. The
+    // fold below compares against this, not against the ledger `open`
+    // hands back: a count or basis change moves the total inside `open`,
+    // and comparing after it would miss a content extent that every
+    // ancestor already measured and cached.
+    let measured_extent = ctx
+        .extents
+        .content_extent(id, count, estimate, ctx.theme_rev, ctx.scale);
     // The ledger as this pass found it: where the anchor is, and where every
     // row the window starts from is.
     let list = ctx
@@ -564,6 +573,12 @@ fn materialize(
     let window_start = (offset - scroll.overscan).max(0.0);
     let window_end = (offset + viewport_extent + scroll.overscan).min(total);
     if count == 0 || window_end <= window_start {
+        // Nothing to fetch, but `open` may still have moved the total.
+        if total != measured_extent {
+            ctx.cache.apply(&crate::layout::ChangeSet::Nodes(
+                std::iter::once(id.to_owned()).collect(),
+            ));
+        }
         return None;
     }
     let anchor = before.index_at(offset.max(0.0));
@@ -575,6 +590,7 @@ fn materialize(
     // measured rows reach the window's end.
     let mut rows: Vec<(std::sync::Arc<ViewNode>, f32, f32)> = Vec::new();
     let mut next = start;
+    ctx.extents.rows.begin(id);
     let mut reach = anchor_at;
     let mut guess_end = (before.index_at(window_end) + 1).min(count);
     while next < count && rows.len() < budget && (next <= anchor || reach < window_end) {
@@ -591,6 +607,9 @@ fn materialize(
         if fetched.is_empty() {
             break;
         }
+        // A row that changed under its old key must not answer from the size
+        // its old content took ([`crate::layout::row_memo`]).
+        let fetched = graft_rows(ctx, id, fetched, path);
         for row_node in fetched {
             let row_proposal = SizeProposal::exact(Size::from_axes(axis, estimate, cross_extent));
             let row_size = crate::layout::measure(&row_node, ctx, path, row_proposal);
@@ -641,7 +660,7 @@ fn materialize(
         }
         (
             list.list().prefix(anchor) - anchor_at,
-            list.list().total() != total,
+            list.list().total() != measured_extent,
         )
     };
     if let Some(scroll_id) = scroll_id {
@@ -663,6 +682,48 @@ fn materialize(
         })
         .collect();
     Some(Window { first: start, rows })
+}
+
+/// `rows`, each grafted onto the same row from this list's last fetch, with
+/// the measurements of every node in them that moved dropped.
+///
+/// One pass over the cache for the whole batch, not one per row: a row new
+/// to the memo names every node it holds, and a scroll brings several in at
+/// once, so a per-row `retain` would scan the cache once per row scrolled
+/// into view.
+///
+/// The invalidation stops at each row's own root. The collection and its
+/// ancestors measure from the extents ledger, not from their rows, and a row
+/// that measures differently moves the ledger, which invalidates them on its
+/// own path (`materialize`'s fold).
+fn graft_rows(
+    ctx: &mut LayoutCtx<'_>,
+    list: &str,
+    rows: Vec<std::sync::Arc<ViewNode>>,
+    path: &mut KeyPath,
+) -> Vec<std::sync::Arc<ViewNode>> {
+    let mut doomed = std::collections::HashSet::new();
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            path.push(row.key.clone());
+            let row_id = path.id();
+            path.pop();
+            let mut moved = Vec::new();
+            let row = ctx.extents.rows.graft(list, row, path, &mut moved);
+            for id in moved {
+                for ancestor in KeyPath::ancestor_ids(&id) {
+                    if KeyPath::is_at_or_under(&ancestor, &row_id) {
+                        doomed.insert(ancestor);
+                    }
+                }
+                doomed.insert(id);
+            }
+            row
+        })
+        .collect();
+    ctx.cache.invalidate_nodes(&doomed);
+    rows
 }
 
 /// A declared `estimated_extent`, or the shared default when the declared
@@ -1691,6 +1752,51 @@ mod tests {
             unbounded.0
         );
         assert_eq!(unbounded.3, 0, "the control must not have evicted anything");
+    }
+
+    /// A count change moves the ledger's total inside `open`, after the
+    /// collection already answered `measure` from `count × estimate`. The
+    /// fold has to compare against that answer, or the size every ancestor
+    /// cached outlives the frame and a kept cache serves it for good.
+    ///
+    /// Red before the fold compared against `measured_extent`: the fourth
+    /// frame placed the collection at the 22-row estimate (616) while the
+    /// ledger held the measured rows.
+    #[test]
+    fn a_count_change_that_moves_the_ledger_total_reaches_the_next_measure() {
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 22).each_row_tall(44.0),
+        );
+        let frame = |h: &mut Harness<MonoContent, GeneratedRows>, tree: &ViewNode| {
+            let mut sink = PlacementList::new();
+            crate::layout::place(
+                tree,
+                &mut h.ctx(),
+                &mut KeyPath::root(),
+                Slot::new(Rect::new(0.0, 0.0, 200.0, 224.0)),
+                &mut sink,
+            );
+            sink.as_slice()
+                .iter()
+                .find(|p| p.id == "/list/rows")
+                .expect("the collection is placed")
+                .rect
+                .h
+        };
+        let twenty = scroll_with_collection(20, 28.0, 0.0);
+        frame(&mut h, &twenty);
+        frame(&mut h, &twenty);
+        // What a host's graft names when `total_count` moves.
+        let grown = scroll_with_collection(22, 28.0, 0.0);
+        h.cache.apply(&crate::layout::ChangeSet::node("/list/rows"));
+        frame(&mut h, &grown);
+        let kept = frame(&mut h, &grown);
+        let ledger = h.extents.list("/list/rows").expect("a ledger").total();
+        assert_eq!(
+            kept, ledger,
+            "the collection kept a size its ledger no longer holds"
+        );
     }
 
     /// The defect the operator found in a screenshot, as a check.

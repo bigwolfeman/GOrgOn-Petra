@@ -163,6 +163,14 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
         self.index.len()
     }
 
+    /// Every entry held, in no particular order, without touching recency.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|entry| (entry.key.as_ref(), &entry.value))
+    }
+
     /// Whether the cache holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {

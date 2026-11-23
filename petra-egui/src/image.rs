@@ -188,6 +188,7 @@ impl std::error::Error for PixelsError {}
 pub struct ImageSources {
     pixels: BTreeMap<String, ImagePixels>,
     uploaded: BTreeMap<String, TextureHandle>,
+    revision: u64,
 }
 
 impl ImageSources {
@@ -218,6 +219,7 @@ impl ImageSources {
         let source = source.into();
         self.uploaded.remove(&source);
         self.pixels.insert(source, pixels);
+        self.revision += 1;
         Ok(())
     }
 
@@ -229,7 +231,20 @@ impl ImageSources {
     /// outlive their use.
     pub fn remove(&mut self, source: &str) -> bool {
         self.uploaded.remove(source);
-        self.pixels.remove(source).is_some()
+        let removed = self.pixels.remove(source).is_some();
+        if removed {
+            self.revision += 1;
+        }
+        removed
+    }
+
+    /// Moves on every registration and every removal that removed
+    /// something. An image node's size is its source's pixels, which no tree
+    /// carries, so a host compares this between frames to learn that sizes
+    /// it measured earlier may be stale.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The registered names, in order.

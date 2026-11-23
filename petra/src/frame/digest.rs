@@ -94,7 +94,7 @@ use crate::geom::Scale;
 /// in this module's tests), but the Merkle form hashes the *shape*, closing
 /// the gap regardless. It also gives an unchanged subtree a hash that does
 /// not depend on re-walking it, which is what a reuse pass needs
-/// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
+/// (`.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`).
 /// No per-placement field moved: the leaf stream below is byte-for-byte what
 /// `v3`'s shared stream wrote per placement, just framed differently.
 ///
@@ -825,7 +825,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
         // `parent` is the field that rebasing rewrites
-        // (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
+        // (`.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`,
         // "Placements copy; `parent` rebases"). It was already excluded from
         // the digest before that was true — redundant with `id`, which is
         // the full key path — and it stays excluded now that it is also
@@ -1852,7 +1852,7 @@ mod tests {
 
         // `parent` is excluded from the *leaf* stream unconditionally — this
         // is what makes rebasing a copied subtree's `parent` safe
-        // (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
+        // (`.agents/notes/implemented/architecture/2026-08-22-petra-incremental-frames.md`,
         // "Placements copy; `parent` rebases"). It is not the same claim as
         // "any parent value leaves the frame digest unchanged": under the
         // Merkle framing a placement's `parent` says which other subtree it
