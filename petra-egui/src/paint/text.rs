@@ -102,6 +102,7 @@ pub(super) fn paint_text(
             max_lines: text.max_lines,
             available_width: Some(inner_w),
             runs: gorgon_petra::layout::TextRuns::Frame(&text.runs),
+            text_scale: text.scale,
         };
         // The selected stretch, resolved as a pair. Neither half is usable
         // alone: the fill without the ink can sink a coloured run below AA,
@@ -255,7 +256,9 @@ fn paint_code_chips(
         .typography()
         .resolve(text.style.as_deref())
         .0
-        .clone();
+        // The chip is sized from the code face the galley was shaped with,
+        // so it carries the same text scale (`TextPaint::scale`).
+        .scaled(text.scale.factor());
     let corner = env.colors.radius(CHIP_CORNER).unwrap_or_else(|| {
         report.unresolved_tokens.insert(CHIP_CORNER.to_owned());
         0.0

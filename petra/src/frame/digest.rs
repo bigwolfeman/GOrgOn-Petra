@@ -357,6 +357,7 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         Some(TextPaint {
             text,
             style,
+            scale,
             wrap,
             max_lines,
             runs,
@@ -420,6 +421,14 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
                 for run in runs {
                     w.bool(run.code);
                 }
+            }
+            // A text scale is a picture change (the same run at twice the
+            // size), written on the same terms again: only when it is not
+            // one, after everything before it, so every frame drawn at the
+            // theme's own size keeps its digest.
+            if *scale != Scale::ONE {
+                w.text("text-scale");
+                w.decimal(scale.factor());
             }
         }
         None => w.bool(false),
@@ -1502,6 +1511,7 @@ mod tests {
             text: Some(TextPaint {
                 text: "Fibers".into(),
                 style: Some("heading".into()),
+                scale: crate::geom::Scale::ONE,
                 wrap: TextWrap::Ellipsis,
                 max_lines: Some(2),
                 runs: Vec::new(),
@@ -2175,6 +2185,7 @@ mod tests {
             text: Some(TextPaint {
                 text: "Fibers".into(),
                 style: None,
+                scale: crate::geom::Scale::ONE,
                 wrap: TextWrap::Wrap,
                 max_lines: None,
                 runs: Vec::new(),

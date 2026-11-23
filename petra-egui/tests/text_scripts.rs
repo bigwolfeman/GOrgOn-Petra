@@ -198,6 +198,7 @@ fn the_production_shaper_draws_the_same_runs_without_a_box() {
             style: Some("typography.body"),
             available_width: Some(180.0),
             runs: gorgon_petra::layout::TextRuns::Plain,
+            text_scale: gorgon_petra::geom::Scale::ONE,
             wrap: TextWrap::Wrap,
             max_lines: None,
         };
@@ -371,6 +372,7 @@ fn the_shaper_reports_ink_past_the_line_box_only_where_glyphs_draw_it() {
                     style: Some(style),
                     available_width: None,
                     runs: gorgon_petra::layout::TextRuns::Plain,
+                    text_scale: gorgon_petra::geom::Scale::ONE,
                     wrap: TextWrap::Clip,
                     max_lines: None,
                 })

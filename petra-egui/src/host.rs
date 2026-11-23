@@ -1886,6 +1886,7 @@ impl<A: App> Host<A> {
             theme,
             theme_rev: viewport.theme_rev,
             scale: viewport.scale,
+            text_scale: gorgon_petra::geom::Scale::ONE,
             scroll: ScrollStack::new(),
             reuse: None,
             anchors: AnchorRects::new(),
@@ -1969,6 +1970,7 @@ impl<A: App> Host<A> {
             theme,
             theme_rev: viewport.theme_rev,
             scale: viewport.scale,
+            text_scale: gorgon_petra::geom::Scale::ONE,
             scroll: ScrollStack::new(),
             reuse: None,
             anchors: AnchorRects::new(),
@@ -2049,6 +2051,15 @@ impl<A: App> Host<A> {
         // operator sees is one behind his own click.
         if let Some(theme) = self.app.theme_request() {
             self.presenter.publish(theme);
+        }
+        // The window zoom is the application's, through `zoom_request`.
+        // egui's own Ctrl+Plus, Ctrl+Minus and Ctrl+0 change the same zoom
+        // factor at the end of every pass, behind the application's back,
+        // so a setting that names the zoom would no longer say what the
+        // window shows, and a chord the application binds to those keys
+        // would act twice. The keystrokes still reach the application.
+        if ctx.options(|o| o.zoom_with_keyboard) {
+            ctx.options_mut(|o| o.zoom_with_keyboard = false);
         }
         if let Some(zoom) = self.app.zoom_request()
             && zoom.is_finite()
@@ -4157,6 +4168,7 @@ impl<A: App> Host<A> {
             max_lines: text.max_lines,
             available_width: Some((placement.rect.w - 2.0 * inset_x).max(0.0)),
             runs: gorgon_petra::layout::TextRuns::Frame(&text.runs),
+            text_scale: text.scale,
         };
         let galley = shaper.galley(&request);
         // The painter centres a field's galley in the chrome; a run's galley
@@ -5942,6 +5954,138 @@ mod tests {
         host.app_mut().want = None;
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(ctx.zoom_factor(), 1.5, "no answer leaves the zoom");
+    }
+
+    /// An application over a long scroll that records every event it hears
+    /// and the route each took.
+    #[derive(Default)]
+    struct Hears {
+        heard: Vec<(InputEvent, Route)>,
+    }
+
+    impl RowSource for Hears {
+        fn rows(&mut self, source: &str, range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            Steps { by: None }.rows(source, range)
+        }
+    }
+
+    impl App for Hears {
+        fn view(&mut self) -> ViewNode {
+            Steps { by: None }
+                .view()
+                .interactive(Role::Scroll, "code", &[Interaction::Scroll])
+        }
+
+        fn handle(&mut self, event: &InputEvent, route: &Route, _: Option<&PetrifiedFrame>) {
+            self.heard.push((event.clone(), route.clone()));
+        }
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+    }
+
+    /// Ctrl+wheel over a scroll reaches the application as one window-level
+    /// zoom, and the scroll under the pointer does not move. The same wheel
+    /// with no modifier still scrolls. The side buttons reach the
+    /// application unrouted, and neither presses nor captures anything.
+    /// egui's own Ctrl+Plus no longer zooms the window behind the
+    /// application's back.
+    ///
+    /// Falsify by deleting the `modifiers.command` arm in
+    /// `EventTranslator::translate_one`: the Ctrl+wheel becomes a scroll and
+    /// the offset moves.
+    #[test]
+    fn ctrl_wheel_is_a_zoom_the_side_buttons_are_window_level_and_ctrl_plus_zooms_nothing() {
+        use gorgon_petra::input::PointerButton;
+        let (ctx, mut host) = boot(Hears::default());
+        step(&ctx, &mut host, RawInput::default());
+        let at = egui::Pos2::new(40.0, 40.0);
+        let wheel = |modifiers: Modifiers| {
+            let mut raw = RawInput::default();
+            raw.events.push(Event::PointerMoved(at));
+            raw.events.push(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -3.0),
+                phase: egui::TouchPhase::Move,
+                modifiers,
+            });
+            raw
+        };
+        let offset = |host: &Host<Hears>| {
+            host.state()
+                .scroll_offsets
+                .get("/code")
+                .copied()
+                .unwrap_or(0.0)
+        };
+        step(&ctx, &mut host, wheel(Modifiers::COMMAND));
+        assert_eq!(offset(&host), 0.0, "Ctrl+wheel scrolled the view");
+        let zooms: Vec<_> = host
+            .app()
+            .heard
+            .iter()
+            .filter_map(|(event, route)| match event {
+                InputEvent::Zoom { pos, factor } => Some((*pos, *factor, route.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(zooms.len(), 1, "{:?}", host.app().heard);
+        let (pos, factor, route) = &zooms[0];
+        assert_eq!(*pos, Point::new(at.x, at.y));
+        assert!(*factor < 1.0, "the wheel towards the operator zooms out");
+        assert!(matches!(route, Route::Unrouted { .. }), "{route:?}");
+        step(&ctx, &mut host, wheel(Modifiers::NONE));
+        assert!(offset(&host) > 0.0, "a plain wheel still scrolls");
+
+        host.app_mut().heard.clear();
+        for button in [egui::PointerButton::Extra1, egui::PointerButton::Extra2] {
+            for pressed in [true, false] {
+                let mut raw = RawInput::default();
+                raw.events.push(Event::PointerButton {
+                    pos: at,
+                    button,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                });
+                step(&ctx, &mut host, raw);
+                assert!(host.pointer().capture().is_none(), "{button:?} captured");
+                assert!(host.pointer().pressed().is_none(), "{button:?} pressed");
+            }
+        }
+        let presses: Vec<_> = host
+            .app()
+            .heard
+            .iter()
+            .filter_map(|(event, route)| match event {
+                InputEvent::PointerPressed { button, .. } => Some((*button, route.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            presses.iter().map(|(b, _)| *b).collect::<Vec<_>>(),
+            [PointerButton::Back, PointerButton::Forward]
+        );
+        assert!(
+            presses
+                .iter()
+                .all(|(_, route)| matches!(route, Route::Unrouted { .. })),
+            "{presses:?}"
+        );
+
+        let before = ctx.zoom_factor();
+        let mut raw = RawInput::default();
+        raw.events.push(Event::ModifiersChanged(Modifiers::COMMAND));
+        raw.events.push(Event::Key {
+            key: egui::Key::Equals,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        });
+        step(&ctx, &mut host, raw);
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(ctx.zoom_factor(), before, "egui zoomed the window itself");
     }
 
     /// A step moves the scroll through the wheel's clamp: down moves the
@@ -8165,6 +8309,7 @@ mod tests {
             proposal: SizeProposal::unbounded(),
             theme_rev: 0,
             scale: Scale::ONE,
+            text_scale: Scale::ONE,
         }
     }
 

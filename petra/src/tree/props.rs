@@ -1248,6 +1248,22 @@ pub struct Props {
     /// Paint opacity in `[0, 1]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    /// A factor on the size of every run of text in this node's subtree:
+    /// font size, line height and tracking all scale by it, as a reader's
+    /// text zoom does. Finite and positive; `1.0` changes nothing.
+    ///
+    /// An environment value, the way SwiftUI's is: it is declared once on a
+    /// container and every descendant reads it, including the rows a
+    /// `collection` materializes later, so a view built from typography
+    /// tokens is zoomed without naming a size anywhere. Nested declarations
+    /// multiply. It travels down the walk on the slot
+    /// ([`crate::layout::Slot::text_scale`]), which makes it part of the
+    /// reuse test, and into every measure key, so a subtree placed under one
+    /// scale is never carried over into another. Only text scales: padding,
+    /// gaps and rules keep their token sizes, which is what separates a text
+    /// zoom from the window zoom a host applies through its display scale.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_scale: Option<f32>,
     /// Content insets from this node's own edges. Honoured only by container
     /// kinds (`NodeKind::is_container`) — a leaf has no children to inset,
     /// and `padding` on a leaf is a tree-acceptance violation rather than a

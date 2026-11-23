@@ -335,6 +335,10 @@ pub struct TextPaint {
     pub text: String,
     /// Typography token name, or `None` for the theme's body style.
     pub style: Option<String>,
+    /// The text scale in force where the node was placed
+    /// ([`crate::tree::Props::text_scale`]): the style's size, line height
+    /// and tracking are multiplied by it. A picture fact, so it is hashed.
+    pub scale: crate::geom::Scale,
     /// Truncation policy.
     pub wrap: TextWrap,
     /// Line cap, or `None` for unlimited.
@@ -1324,6 +1328,7 @@ mod tests {
         let text = TextPaint {
             text: "hi".into(),
             style: None,
+            scale: crate::geom::Scale::ONE,
             wrap: TextWrap::Wrap,
             max_lines: None,
             runs: Vec::new(),
@@ -1429,6 +1434,7 @@ mod tests {
             text: Some(TextPaint {
                 text: "hi".into(),
                 style: None,
+                scale: crate::geom::Scale::ONE,
                 wrap: TextWrap::Wrap,
                 max_lines: None,
                 runs: Vec::new(),

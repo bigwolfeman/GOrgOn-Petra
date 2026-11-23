@@ -322,7 +322,7 @@ fn arrange(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, rect: R
                     .min(cross_extent);
                 // A character cap is a declared maximum too (`max_chars`).
                 match main.cross() {
-                    Axis::Horizontal => crate::layout::char_cap(child, ctx)
+                    Axis::Horizontal => crate::layout::char_cap(child, ctx, ctx.text_scale)
                         .map_or(stretched, |cap| stretched.min(cap)),
                     Axis::Vertical => stretched,
                 }

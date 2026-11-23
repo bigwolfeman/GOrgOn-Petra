@@ -24,6 +24,30 @@ pub enum PointerButton {
     Secondary,
     /// Middle button.
     Middle,
+    /// The "back" side button (X1 on a five-button mouse), the platform's
+    /// go-back command.
+    ///
+    /// Window-level, like [`InputEvent::Copy`]: a press of it asks the
+    /// application to step back through where the operator has been, not
+    /// the node under the pointer to do something. So it asks for no
+    /// [`Interaction`] ([`required_interaction`] is `None`), routes as
+    /// [`Route::Unrouted`], never opens a pointer capture, and never presses
+    /// a control. The application hears it through `App::handle` in every
+    /// focus context, the way a browser hears its back button over any part
+    /// of the page.
+    Back,
+    /// The "forward" side button (X2), the platform's go-forward command.
+    /// Window-level for [`PointerButton::Back`]'s reasons.
+    Forward,
+}
+
+impl PointerButton {
+    /// Whether this is one of the two navigation buttons, which ask the
+    /// window to go back or forward rather than act on a node.
+    #[must_use]
+    pub fn navigates(self) -> bool {
+        matches!(self, Self::Back | Self::Forward)
+    }
 }
 
 /// Chord modifiers in force for an event.
@@ -349,6 +373,38 @@ pub enum InputEvent {
         /// Modifiers held.
         modifiers: Modifiers,
     },
+    /// The operator asked to zoom by `factor` with the pointer at `pos`:
+    /// Ctrl+wheel (Cmd+wheel on macOS), or a trackpad pinch.
+    ///
+    /// # Why this is an event and not a scroll with Ctrl held
+    ///
+    /// Every desktop toolkit reads the zoom modifier on a wheel as zoom, not
+    /// scroll, and egui does too (`InputState::zoom_delta`, the
+    /// `zoom_modifier` option). Before this variant Petra turned Ctrl+wheel
+    /// into an ordinary [`InputEvent::Scroll`], so the host scrolled the
+    /// view under the pointer and no application could tell the wheel was
+    /// meant as zoom. A pinch is the same intent from another device, and
+    /// it reached nothing at all. One intent, several devices, so the
+    /// vocabulary names the intent, as [`InputEvent::Copy`] does.
+    ///
+    /// `factor` is multiplicative: above 1 is in, below 1 is out, and two
+    /// events compose by multiplying. A wheel turn converts the way egui's
+    /// own `zoom_delta` does, `exp(delta / 200)` with the delta in logical
+    /// units, so one desktop wheel notch (40 units) is a factor of about
+    /// 1.22. A pinch passes its factor through.
+    ///
+    /// Window-level like [`InputEvent::Copy`]: [`required_interaction`] is
+    /// `None`, the route is [`Route::Unrouted`], and the host scrolls
+    /// nothing. `pos` is carried rather than routed on, so an application
+    /// can ask what is under the pointer itself (a document zooms its text,
+    /// the chrome around it does not), and it is not a pointer position for
+    /// hover or capture ([`InputEvent::pointer_pos`] is `None`).
+    Zoom {
+        /// Where the pointer was, in logical units.
+        pos: Point,
+        /// The zoom asked for: above 1 is in, below 1 is out.
+        factor: f32,
+    },
     /// Committed text, from a keystroke or an IME composition. A paste is
     /// [`InputEvent::Paste`] from the host, and every node but a raw
     /// claimant hears it as this variant ([`InputEvent::delivered`]).
@@ -571,16 +627,19 @@ pub fn required_interaction_during(
     event: &InputEvent,
     capture: Option<&Capture>,
 ) -> Option<Interaction> {
-    if capture.is_some() && event.is_positional() {
+    if capture.is_some() && event.is_positional() && !navigates(event) {
         return Some(Interaction::Drag);
     }
     match event {
         InputEvent::PointerMoved { .. } | InputEvent::PointerLeft => Some(Interaction::Hover),
         InputEvent::PointerPressed { button, .. } | InputEvent::PointerReleased { button, .. } => {
-            Some(match button {
-                PointerButton::Secondary => Interaction::SecondaryClick,
-                PointerButton::Primary | PointerButton::Middle => Interaction::Click,
-            })
+            match button {
+                PointerButton::Secondary => Some(Interaction::SecondaryClick),
+                PointerButton::Primary | PointerButton::Middle => Some(Interaction::Click),
+                // The window's go-back and go-forward, aimed at no node
+                // (`PointerButton::Back`).
+                PointerButton::Back | PointerButton::Forward => None,
+            }
         }
         InputEvent::Scroll { .. } => Some(Interaction::Scroll),
         InputEvent::Key { .. } => Some(Interaction::Key),
@@ -595,9 +654,25 @@ pub fn required_interaction_during(
         InputEvent::WindowFocused
         | InputEvent::WindowBlurred
         | InputEvent::Modifiers(_)
+        | InputEvent::Zoom { .. }
         | InputEvent::Copy
         | InputEvent::Cut => None,
     }
+}
+
+/// Whether this event is a press or release of a navigation button
+/// ([`PointerButton::Back`] or [`PointerButton::Forward`]).
+///
+/// Such an event carries a position, because the device reports one, but it
+/// is aimed at the window: it is never part of a gesture, never routed to a
+/// capture holder, and never presses a control ([`PointerState::route`]).
+#[must_use]
+pub fn navigates(event: &InputEvent) -> bool {
+    matches!(
+        event,
+        InputEvent::PointerPressed { button, .. } | InputEvent::PointerReleased { button, .. }
+            if button.navigates()
+    )
 }
 
 /// Whether this event is a keyboard activation — the keystroke that stands in
@@ -1303,6 +1378,25 @@ impl PointerState {
                     ended,
                 }
             }
+            // A side button asks the window to go back or forward. It is
+            // no part of a drag in flight (only the button that opened a
+            // gesture closes it, and this one opened none), it grants no
+            // capture, it presses nothing, and it dismisses no popover: a
+            // press that did none of those must not end one either.
+            _ if navigates(event) => {
+                if let Some(pos) = event.pointer_pos() {
+                    self.pos = Some(pos);
+                }
+                PointerRouting {
+                    outcome: RouteOutcome {
+                        route: Route::Unrouted {
+                            reason: "a navigation button is aimed at the window, not a node".into(),
+                        },
+                        dismiss: Vec::new(),
+                    },
+                    ended: None,
+                }
+            }
             _ => match event.pointer_pos() {
                 Some(pos) => self.route_positional(frame, focused, surfaces, event, pos),
                 None => PointerRouting {
@@ -1686,9 +1780,13 @@ fn dismiss_requests(
     event: &InputEvent,
     surfaces: &BTreeMap<String, InputPolicy>,
 ) -> Vec<String> {
-    let InputEvent::PointerPressed { pos, .. } = event else {
+    let InputEvent::PointerPressed { pos, button, .. } = event else {
         return Vec::new();
     };
+    // A side button is the window's back or forward, not a click outside.
+    if button.navigates() {
+        return Vec::new();
+    }
     let inside = |id: &str| {
         let nested = format!("{id}/");
         surfaces
@@ -2150,6 +2248,7 @@ mod tests {
                         text: Some(crate::frame::placement::TextPaint {
                             text: placement.id.clone(),
                             style: None,
+                            scale: crate::geom::Scale::ONE,
                             wrap: crate::tree::TextWrap::Clip,
                             max_lines: None,
                             runs: Vec::new(),
@@ -3486,6 +3585,87 @@ mod tests {
             button: PointerButton::Primary,
             modifiers: Modifiers::NONE,
         }
+    }
+
+    fn side(button: PointerButton, pressed: bool, pos: Point) -> InputEvent {
+        if pressed {
+            InputEvent::PointerPressed {
+                pos,
+                button,
+                modifiers: Modifiers::NONE,
+            }
+        } else {
+            InputEvent::PointerReleased {
+                pos,
+                button,
+                modifiers: Modifiers::NONE,
+            }
+        }
+    }
+
+    /// The side buttons are the window's back and forward. Over a node that
+    /// takes clicks they route nowhere; over a drag in flight they do not
+    /// reach the holder or end the gesture; and they dismiss no popover. A
+    /// zoom is window-level too, and is no pointer position.
+    ///
+    /// Falsify by mapping `PointerButton::Back` to `Interaction::Click` in
+    /// `required_interaction_during`: the press lands on `/backdrop`.
+    #[test]
+    fn the_side_buttons_and_a_zoom_are_window_level() {
+        let f = frame(vec![
+            node(
+                "/backdrop",
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Click, Interaction::Drag],
+            ),
+            node("/surface", Rect::new(50.0, 50.0, 50.0, 50.0), 5, &[]),
+        ]);
+        let at = Point::new(10.0, 10.0);
+        for button in [PointerButton::Back, PointerButton::Forward] {
+            assert!(button.navigates());
+            let outcome = route_with_surfaces(
+                &f,
+                None,
+                &side(button, true, at),
+                &policy_map(InputPolicy::DismissOutside),
+                None,
+            );
+            assert!(
+                matches!(outcome.route, Route::Unrouted { .. }),
+                "{button:?}: {:?}",
+                outcome.route
+            );
+            assert!(outcome.dismiss.is_empty(), "{button:?} dismissed a popover");
+        }
+        assert!(!PointerButton::Middle.navigates());
+
+        // A drag in flight keeps its capture through a side button.
+        let mut state = PointerState::new();
+        let none = BTreeMap::new();
+        let routed = state.route(&f, None, &none, &press(at));
+        assert!(state.capture().is_some(), "{routed:?}");
+        for pressed in [true, false] {
+            let routed = state.route(&f, None, &none, &side(PointerButton::Back, pressed, at));
+            assert!(
+                matches!(routed.outcome.route, Route::Unrouted { .. }),
+                "{routed:?}"
+            );
+            assert!(routed.ended.is_none(), "the side button ended the drag");
+            assert_eq!(
+                state.capture().map(|c| c.node.as_str()),
+                Some("/backdrop"),
+                "the drag lost its capture"
+            );
+        }
+
+        let zoom = InputEvent::Zoom {
+            pos: at,
+            factor: 1.2,
+        };
+        assert_eq!(required_interaction(&zoom), None);
+        assert_eq!(zoom.pointer_pos(), None, "a zoom moves no hover");
+        assert!(matches!(route(&f, None, &zoom), Route::Unrouted { .. }));
     }
 
     fn policy_map(policy: InputPolicy) -> BTreeMap<String, InputPolicy> {
