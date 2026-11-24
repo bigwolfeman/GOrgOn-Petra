@@ -829,6 +829,10 @@ impl GalleyShaper {
         // which takes a `FontId` and has nowhere to put a line height.
         // `single_section` leaves `wrap` at its default, so the wrap width
         // `simple` would have set is set here.
+        let code_line_height = faces
+            .iter()
+            .any(|(_, face)| face.code)
+            .then(|| self.code_line_height(&style));
         let format = |face: RunFace,
                       color: Color32,
                       underline: bool,
@@ -836,7 +840,11 @@ impl GalleyShaper {
             font_id: style.font_at(face),
             color,
             background: background.unwrap_or(Color32::TRANSPARENT),
-            line_height: style.line_height,
+            line_height: if face.code {
+                code_line_height.or(style.line_height)
+            } else {
+                style.line_height
+            },
             extra_letter_spacing: style.extra_letter_spacing,
             // One unit in the run's own ink, which egui draws under the
             // baseline and which moves no glyph.
@@ -897,6 +905,45 @@ impl GalleyShaper {
         self.galleys.insert(key, Arc::clone(&galley));
         galley
     }
+
+    /// The line height an inline-code section of `style` lays out with, so
+    /// its glyphs share the words' baseline.
+    ///
+    /// egui puts a glyph's baseline at its own face's ascent below the row
+    /// top, plus `valign` times the row's height less the section's line
+    /// height (`epaint` `galley_from_rows`). With one line height on every
+    /// section, that leaves the code face's baseline at the code face's
+    /// ascent: the mono face at the code step's smaller size has the
+    /// smaller ascent, so inline code rode above the words around it. A
+    /// code section shorter than the row by the difference in ascents
+    /// takes that difference back under the default bottom `valign`, which
+    /// lands both baselines on one pixel row. A code face with the larger
+    /// ascent gets the longer line instead: the row grows by the
+    /// difference and the words move down to the code's baseline.
+    ///
+    /// A row that wraps to inline code alone is that difference shorter
+    /// than a row of words (about a pixel and a half on the shipped body
+    /// step): egui sizes a row from the glyphs on it, and a code section
+    /// cannot ask for a taller row without lifting its own baseline.
+    fn code_line_height(&self, style: &TextStyle) -> f32 {
+        let ppp = self.ctx.pixels_per_point();
+        let code = style.font_at(RunFace {
+            code: true,
+            ..RunFace::default()
+        });
+        let coords = egui::epaint::text::VariationCoords::default();
+        let (words, code) = self.ctx.fonts_mut(|fonts| {
+            let mut metrics = |font: &FontId| {
+                fonts
+                    .fonts
+                    .font(&font.family)
+                    .styled_metrics(ppp, font.size, &coords)
+            };
+            (metrics(&style.font), metrics(&code))
+        });
+        let row = style.line_height.unwrap_or(words.row_height);
+        row - (words.ascent - code.ascent)
+    }
 }
 
 /// The space an inline-code run ([`gorgon_petra::tree::TextRun::code`])
@@ -914,8 +961,11 @@ pub fn code_clearance(style: &TextStyle) -> f32 {
         * CODE_CLEARANCE
 }
 
-/// [`code_clearance`] as a share of the code face's size.
-const CODE_CLEARANCE: f32 = 0.35;
+/// [`code_clearance`] as a share of the code face's size: the chip's reach
+/// and a twentieth of an em more, so punctuation written against the code
+/// (`(`code`,`) sits against the chip, as it does in a GitHub preview,
+/// while the chip still stops short of the glyph beside it.
+const CODE_CLEARANCE: f32 = 0.30;
 
 /// How far a chip reaches into its clear space, as a share of the code
 /// face's size: GitHub's `code` pads a quarter em or so at each side.
@@ -2650,6 +2700,68 @@ mod tests {
             chip.height() < letters[0].height(),
             "the line's leading stays out"
         );
+    }
+
+    /// Inline code shares the words' baseline on a small, the body and a
+    /// heading step, and the row keeps the words' height.
+    ///
+    /// Falsify by giving code sections the style's own line height again
+    /// (`GalleyShaper::code_line_height`): the smaller mono face's baseline
+    /// rides its own ascent, above the words.
+    #[test]
+    fn inline_code_sits_on_the_words_baseline() {
+        use gorgon_petra::layout::TextRuns;
+        use gorgon_petra::tree::TextRun;
+        let h = Headless::new();
+        crate::fonts::install_design_system(&h.0);
+        pass(&h.0);
+        let typography = Typography::from_theme(&dark(), &crate::fonts::design_system_faces());
+        let text = "see code, then";
+        let tree = [
+            TextRun {
+                len: 4,
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 4,
+                code: true,
+                ..TextRun::default()
+            },
+            TextRun {
+                len: 6,
+                ..TextRun::default()
+            },
+        ];
+        for step in [
+            "typography.caption",
+            "typography.body",
+            "typography.heading-lg",
+        ] {
+            let mut s = h.shaper_with(typography.clone());
+            let plain = s.galley(&TextRequest {
+                style: Some(step),
+                ..req(text, None, TextWrap::Wrap)
+            });
+            let galley = s.galley(&TextRequest {
+                style: Some(step),
+                runs: TextRuns::Tree(&tree),
+                ..req(text, None, TextWrap::Wrap)
+            });
+            assert_eq!(galley.rows.len(), 1, "{step}");
+            let row = &galley.rows[0];
+            let baselines: Vec<f32> = row.glyphs.iter().map(|g| g.pos.y).collect();
+            let words = baselines[0];
+            assert!(
+                baselines.iter().all(|y| (y - words).abs() < 1e-3),
+                "{step}: every glyph on one baseline: {baselines:?}"
+            );
+            assert!(
+                (row.height() - plain.rows[0].height()).abs() < 1e-3,
+                "{step}: the row keeps the words' height: {} against {}",
+                row.height(),
+                plain.rows[0].height()
+            );
+        }
     }
 
     /// A run list that names no weight shapes the plain string: same key,
