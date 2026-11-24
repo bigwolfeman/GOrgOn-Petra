@@ -10,7 +10,7 @@
 //! alpha follows `1-(1-a)^n` catches every regression in the *mechanism*, on
 //! any machine, with no window server of any kind." This file is that test.
 //!
-//! It does not exercise `host::bind_glyph_coverage` or `paint.rs`'s repeat
+//! It does not exercise `text_rendering::bind_text_options` or `paint.rs`'s repeat
 //! loop (Leaf B's glue, covered by that leaf's own
 //! `the_glyph_coverage_curve_follows_the_theme_mode`) — it drives
 //! `egui::Painter::galley` directly, `paints` times, the same primitive
@@ -262,7 +262,7 @@ impl Gpu {
 
 /// Build a context with the design-system fonts installed and the given
 /// atlas curve bound on both style slots — the same defensive symmetry
-/// `text_contact_sheet.rs::render_arm` uses, since `host::bind_glyph_coverage`
+/// `text_contact_sheet.rs::render_arm` uses, since `text_rendering::bind_text_options`
 /// writes both slots and a curve read from the wrong one would be a silent
 /// miss, not a loud one.
 fn context_with_curve(curve: FontColorTransferFunction) -> Context {

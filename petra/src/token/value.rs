@@ -377,14 +377,17 @@ pub struct CoverageValue {
     /// is defined for a fractional `passes`, and a slider dragged across
     /// the range should not snap between whole numbers (SPEC.md §1.4).
     ///
+    /// Below `1.0` the same formula thins an edge instead of thickening it:
+    /// `1 - (1 - 0.5)^0.5 ≈ 0.29`, so a half-covered pixel paints at under
+    /// a third of the ink. A binder reaches that through an atlas gamma
+    /// curve, never through a lower paint alpha, which would only dim the
+    /// whole glyph (`gorgon-petra-egui`'s `coverage_plan`).
+    ///
     /// # Legal range
     ///
-    /// `[1.0, 4.0]`, refused outside that by
-    /// [`crate::token::theme::Theme::build`] the same way a negative
-    /// [`ShapeValue::corner_radius`] is refused: `1.0` is "no compositing"
-    /// (the identity), and `4.0` is ai-macs' own `maxTextSharpness`
-    /// (`text_tuning.go:55`) — the ceiling it measured, not an arbitrary
-    /// round number.
+    /// `[`[`Self::MIN_PASSES`]`, `[`Self::MAX_PASSES`]`]`, refused outside
+    /// that by [`crate::token::theme::Theme::build`] the same way a negative
+    /// [`ShapeValue::corner_radius`] is refused.
     pub passes: f32,
     /// Whether a glyph's horizontal origin snaps to a whole device pixel
     /// before it is drawn. Named for the intent — "does placement snap to
@@ -403,6 +406,19 @@ pub struct CoverageValue {
     /// [`crate::token::theme::Theme::build`]'s usability check has nothing
     /// to say about this field the way it does about `passes`.
     pub snap: bool,
+}
+
+impl CoverageValue {
+    /// The thinnest legal `passes`. The operator asked for `0.5` by name
+    /// (2026-11-23): some displays draw a lighter edge better, and a text
+    /// editor's text is the thing most worth tuning per machine. Below it a
+    /// half-covered pixel paints at under a quarter of the ink and round
+    /// letters break up.
+    pub const MIN_PASSES: f32 = 0.5;
+
+    /// The heaviest legal `passes`: ai-macs' own `maxTextSharpness`
+    /// (`text_tuning.go:55`), the ceiling it measured, not a round number.
+    pub const MAX_PASSES: f32 = 4.0;
 }
 
 /// Which closed figure a paint slot's rect is drawn as.

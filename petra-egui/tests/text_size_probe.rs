@@ -42,7 +42,7 @@
 //! | `PETRA_TEXT_PROBE_PASSES` | the shipped theme's own `text.coverage-curve` | sweep the sharpness dial |
 //! | `PETRA_TEXT_PROBE_THEME` | `dark` | `light` picks the light theme's surface |
 //!
-//! `PASSES` is resolved through [`gorgon_petra_egui::host::coverage_plan`],
+//! `PASSES` is resolved through [`gorgon_petra_egui::text_rendering::coverage_plan`],
 //! the same function the real paint path uses, so this probe cannot drift
 //! from what ships.
 
@@ -52,8 +52,8 @@ use egui::{Color32, Context, FontFamily, FontId, Pos2, RawInput, Rect, vec2};
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{Presenter, dark, light};
 use gorgon_petra_egui::fonts;
-use gorgon_petra_egui::host::{coverage_plan, coverage_value};
 use gorgon_petra_egui::paint::TokenSource;
+use gorgon_petra_egui::text_rendering::{coverage_plan, coverage_value};
 use support::{Gpu, write_ppm};
 
 /// The one literal colour in this file. See the module doc: a tone decision
@@ -137,7 +137,7 @@ fn text_size_probe() {
 
     let ctx = Context::default();
     fonts::install_design_system(&ctx);
-    // Both style slots, the same reason `host::bind_glyph_coverage` writes
+    // Both style slots, the same reason `text_rendering::bind_text_options` writes
     // both: a curve written to the slot `ctx.theme()` does not currently
     // select is a silent miss.
     for egui_theme in [egui::Theme::Dark, egui::Theme::Light] {

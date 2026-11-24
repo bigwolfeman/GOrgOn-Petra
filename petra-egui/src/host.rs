@@ -68,10 +68,9 @@ use gorgon_petra::layout::{
 use gorgon_petra::semantic::{
     ContributionId, ContributionLedger, ContributionStatus, PushOutcome, contribution_key,
 };
-use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
-    DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenKind, TokenName, TokenValue,
-    Vocabulary, standard_vocabulary,
+    DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenKind, TokenName, Vocabulary,
+    standard_vocabulary,
 };
 use gorgon_petra::tree::{
     ApplyError, DirtyClass, HeldValues, PropKey, ResolvedTree, SlotChange, carries_bindings,
@@ -93,6 +92,9 @@ use crate::paint::{
 use crate::profile::{PassProfile, Stopwatch};
 use crate::schedule::FrameMotion;
 use crate::text::{CustomMeasurers, FontFaces, GalleyShaper, HostedContent, Typography};
+use crate::text_rendering::{
+    AtlasWatch, FontTuner, PassesOutOfRange, TextRendering, WithCoverage, bind_text_options,
+};
 
 /// The egui layer every Petra frame paints into.
 ///
@@ -322,6 +324,23 @@ pub trait App: RowSource {
         None
     }
 
+    /// The text rendering the application wants in place of the theme's
+    /// ([`crate::text_rendering::TextRendering`]), typically from a user
+    /// setting.
+    ///
+    /// Asked once at the top of every [`Host::pass`] and handed to
+    /// [`Host::set_text_rendering`], which does nothing when the answer is
+    /// the one already in force, so an application may answer the same value
+    /// every pass. An answer out of range is refused there and leaves the
+    /// rendering as it was; debug builds assert, because a settings store
+    /// that validated its range cannot produce one.
+    ///
+    /// The default asks for nothing, which draws with the theme's coverage
+    /// curve and the default hinting.
+    fn text_rendering_request(&mut self) -> Option<crate::text_rendering::TextRendering> {
+        None
+    }
+
     /// Text the application wants put on the system clipboard, taken and
     /// cleared.
     ///
@@ -502,201 +521,6 @@ fn dropped_paths(ctx: &Context) -> Vec<std::path::PathBuf> {
             .map(|file| file.path().to_path_buf())
             .collect()
     })
-}
-
-/// Point egui's glyph rasteriser at the coverage curve its own documentation
-/// names for `mode`.
-///
-/// # Why this is a correctness fix and not a tuning knob
-///
-/// epaint rasterises every glyph once, white, into one atlas, and the shader
-/// multiplies that coverage by the run's colour in gamma space
-/// (`egui.wgsl`: `in.color * tex_gamma`). One atlas cannot be right for both
-/// dark-on-light and light-on-dark, so epaint bends the coverage on the way
-/// in and says so itself (`epaint/src/image.rs`): *"This whole thing is less
-/// than rigorous. It would be better to either render all text colors into
-/// the font atlas … or do the color compensation in the shader."*
-///
-/// The bend is [`FontColorTransferFunction`], and it used to have a
-/// hardcoded answer per `ThemeMode` — `Off` for light, `TwoCoverageMinusCoverageSq`
-/// for dark — because those are epaint's own documented per-mode defaults.
-/// That shipped in `86de1a6` and it was **harmful**: it fixed light mode's
-/// curve at the identity (`n = 1`), which is the *most* variance-prone
-/// setting on the per-character weight variance defect this text pipeline
-/// port exists to close (see the port README), not the least. Both curve
-/// *and* paint-repeat count are now a function of one token,
-/// `text.coverage-curve` ([`CoverageValue`]), read off the theme — not of
-/// `ThemeMode` — so light and dark ship identically unless a theme
-/// deliberately diverges them.
-///
-/// # Why this still needs writing at all
-///
-/// epaint rasterises every glyph once, white, into one atlas, and the shader
-/// multiplies that coverage by the run's colour in gamma space
-/// (`egui.wgsl`: `in.color * tex_gamma`). One atlas cannot be right for both
-/// dark-on-light and light-on-dark, so epaint bends the coverage on the way
-/// in and says so itself (`epaint/src/image.rs`): *"This whole thing is less
-/// than rigorous. It would be better to either render all text colors into
-/// the font atlas … or do the color compensation in the shader."*
-///
-/// # The atlas curve and the paint count multiply
-///
-/// `2c - c² ≡ 1 - (1-c)²`, so `TwoCoverageMinusCoverageSq` *is* two-pass
-/// compositing, and painting a galley `k` times under egui-wgpu's
-/// premultiplied source-over composites to `1 - (1-a)^k`
-/// (`crate::paint`'s galley loop). `effective_n = n_atlas · repeats`, which
-/// is exactly what [`coverage_plan`] computes and what [`crate::paint`]
-/// spends. This function only writes the atlas half of that pair — the
-/// repeat half is read straight off the same token, independently, by
-/// [`crate::paint::TokenSource::coverage`], so the two halves can never
-/// read two different published theme revisions.
-///
-/// # Why both egui themes are written
-///
-/// egui keeps a `Style` per *its own* theme and `Options::style()` picks by
-/// that, which this crate never sets. Writing only the active one would
-/// leave a host that later calls `Context::set_theme` reading a stale curve.
-/// Writing the one field into both means Petra's published theme decides the
-/// curve whatever egui thinks its own theme is, and takes nothing else from
-/// an application that wants to own `Visuals` — which is the narrowest
-/// version of this that works.
-///
-/// No atlas clear is needed: `Fonts::begin_pass` compares the incoming
-/// `TextOptions` against the ones the atlas was built with and recreates it
-/// when they differ, so writing the field is the whole of the change.
-fn bind_glyph_coverage(ctx: &Context, theme: &Theme) {
-    let plan = coverage_plan(coverage_value(theme));
-    for egui_theme in [egui::Theme::Dark, egui::Theme::Light] {
-        ctx.style_mut_of(egui_theme, |style| {
-            style.visuals.text_options.color_transfer_function = plan.curve;
-            style.visuals.text_options.subpixel_binning = !plan.snap;
-        });
-    }
-}
-
-/// The token name every coverage-curve lookup reads, spelled once so
-/// [`bind_glyph_coverage`] and [`crate::paint::TokenSource::coverage`]
-/// cannot drift onto two different strings.
-pub(crate) const COVERAGE_TOKEN: &str = "text.coverage-curve";
-
-/// The pair a theme predating [`COVERAGE_TOKEN`] falls back to: `passes:
-/// 2.0` is exactly what both shipped themes' curves computed to before this
-/// token existed (dark ran `TwoCoverageMinusCoverageSq` at one paint, light
-/// ran `Off` at one paint under the old mode-keyed match this superseded —
-/// `n = 2` and `n = 1` respectively — and `2.0` is the higher, honestly
-/// neutral one of the two, not a third number nobody measured), so an
-/// application that hands this host an older vocabulary gets the more
-/// variance-resistant of the two priors rather than either theme's old
-/// number by accident of which mode it happened to be in. `snap: false`
-/// matches every theme this workspace has ever shipped.
-pub const FALLBACK_COVERAGE: CoverageValue = CoverageValue {
-    passes: 2.0,
-    snap: false,
-};
-
-/// `theme`'s `text.coverage-curve`, or [`FALLBACK_COVERAGE`] when the theme's
-/// vocabulary predates the token (an application built its own theme against
-/// an older [`gorgon_petra::token::standard_vocabulary`] snapshot) or the
-/// name resolves to some other token kind (a theme bug `Theme::build` would
-/// have refused had this been declared at the wrong kind — defensive here
-/// regardless, because this function must never panic on a hand-built
-/// `Theme`).
-pub fn coverage_value(theme: &Theme) -> CoverageValue {
-    let name = TokenName::new(COVERAGE_TOKEN)
-        .expect("\"text.coverage-curve\" is a well-formed token name");
-    match theme.value(&name) {
-        Some(TokenValue::Coverage(value)) => *value,
-        _ => FALLBACK_COVERAGE,
-    }
-}
-
-/// What one [`CoverageValue`] resolves to on the paint path: the atlas curve
-/// [`bind_glyph_coverage`] writes onto the `Context`, and the paint-repeat
-/// count and fractional-pass alpha [`crate::paint`] reads to repeat the
-/// galley emission.
-///
-/// Public because it is the *only* authority on that mapping, and an
-/// inspection tool that re-derived it would be a second authority able to
-/// disagree — silently, and in exactly the artifact a human is looking at to
-/// judge the real thing. `tests/text_size_probe.rs` is the caller this was
-/// opened for.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CoveragePlan {
-    /// The curve the glyph atlas rasterises through.
-    pub curve: egui::epaint::FontColorTransferFunction,
-    /// How many whole times to paint the galley.
-    pub repeats: u8,
-    /// `0.0` for no further pass; otherwise the fraction of the text
-    /// colour's alpha to paint one further time, ai-macs' fractional-pass
-    /// model ported verbatim (SPEC.md §1.4, §2.3).
-    pub fraction: f32,
-    /// Whether a glyph's horizontal origin snaps to a whole device pixel.
-    /// Carried straight through from [`CoverageValue::snap`] — see that
-    /// field's doc comment for the (inverted, `bool`-vs-`bool`, no
-    /// compile-time guard) mapping onto
-    /// [`egui::TextOptions::subpixel_binning`].
-    pub snap: bool,
-}
-
-/// `passes → (atlas curve, paint count, fractional-pass alpha)`, the
-/// contract table `SPEC.md` §6.3/§6.4 pins:
-///
-/// | `passes` | atlas curve | paints | effective n |
-/// |---|---|---|---|
-/// | 1.0 | `Off` | 1 | 1 |
-/// | 2.0 | `TwoCoverageMinusCoverageSq` | 1 | 2 |
-/// | 3.0 | `Off` | 3 | 3 |
-/// | 4.0 | `TwoCoverageMinusCoverageSq` | 2 | 4 |
-///
-/// # The trap
-///
-/// `2c - c² ≡ 1 - (1-c)²`: `TwoCoverageMinusCoverageSq` *is* two-pass
-/// compositing, so the atlas curve and the paint count MULTIPLY —
-/// `effective_n = n_atlas · repeats`. `passes = 2.0` deliberately spends the
-/// atlas curve rather than two paints (identical output, one fewer draw);
-/// `passes = 4.0` spends it twice. Every other value — every odd integer,
-/// and every fractional value, including one whose floor is even — goes
-/// through `Off` instead, so the fractional pass below always composites
-/// against raw coverage and stays exactly ai-macs' own formula rather than
-/// needing a second, curve-scaled fractional term. Painting `TwoCov` three
-/// times would be `n = 6`, not `n = 3`; no row of this table, and no value
-/// this function returns for any `passes` in the legal `[1.0, 4.0]` range,
-/// pairs `TwoCov` with three paints (`two_cov_at_three_paints_would_be_n_six_and_no_row_produces_it`).
-pub fn coverage_plan(value: CoverageValue) -> CoveragePlan {
-    use egui::epaint::FontColorTransferFunction;
-
-    /// Float wobble tolerance for recognising the two exact anchor points a
-    /// theme value most likely lands on. Well under any daylight between two
-    /// legal `passes` values a theme would ever assign on purpose.
-    const EPS: f32 = 1e-4;
-
-    let (curve, repeats, fraction) = if (value.passes - 2.0).abs() < EPS {
-        (
-            FontColorTransferFunction::TwoCoverageMinusCoverageSq,
-            1,
-            0.0,
-        )
-    } else if (value.passes - 4.0).abs() < EPS {
-        (
-            FontColorTransferFunction::TwoCoverageMinusCoverageSq,
-            2,
-            0.0,
-        )
-    } else {
-        let whole = value.passes.floor().max(1.0);
-        let frac = value.passes - whole;
-        (
-            FontColorTransferFunction::Off,
-            whole as u8,
-            if frac > 0.001 { frac } else { 0.0 },
-        )
-    };
-    CoveragePlan {
-        curve,
-        repeats,
-        fraction,
-        snap: value.snap,
-    }
 }
 
 /// One surface a plugin contributed, as the shell holds it.
@@ -1081,6 +905,18 @@ pub struct Host<A: App> {
     /// map, a custom measurer, an image source): the next pass treats the
     /// application's change set as [`ChangeSet::All`].
     content_stale: bool,
+    /// The application's text-rendering override, when a user setting names
+    /// one ([`Host::set_text_rendering`]). `None` draws with the theme's.
+    text_override: Option<TextRendering>,
+    /// The text rendering last written into the `Context`, so a write that
+    /// would change nothing costs nothing and the atlas is rebuilt once per
+    /// change, not once per pass.
+    text_applied: TextRendering,
+    /// Notices epaint rebuilding the glyph atlas, which strands every galley
+    /// the shaper holds.
+    atlas: AtlasWatch,
+    /// Keeps the font stack tuned to [`Host::text_rendering`]'s hinting.
+    fonts: FontTuner,
     /// [`ImageSources::revision`] as the last frame measured against it.
     images_seen: u64,
     /// The clock [`Host::pass_profile`] is measured with, if any.
@@ -1363,7 +1199,9 @@ impl<A: App> Host<A> {
     /// first `Host::pass` after construction is the first frame drawn in the
     /// shipped face. An application that wants its own stack calls
     /// `Context::set_fonts` *after* this and takes responsibility for the
-    /// consequence.
+    /// consequence; the host retunes that stack to the hinting in force on
+    /// the pass after it loads ([`crate::text_rendering::tune_definitions`]
+    /// saves the extra atlas rebuild).
     pub fn new(ctx: &Context, app: A, presenter: Presenter) -> Self {
         // The registry that accepts a tree and the theme that resolves it
         // must agree about what token names exist (contract C6): a `Host`
@@ -1378,13 +1216,20 @@ impl<A: App> Host<A> {
         // The shaper's typography map is the other half of the theme a frame
         // reads, so it is bound from the same theme here, and re-bound from
         // the same place.
-        crate::fonts::install_design_system(ctx);
         let snapshot = presenter.current();
-        // Before the first pass rasterises anything: the curve below is an
-        // input to the atlas, and egui rebuilds the atlas when it changes.
-        // Setting it here means the first frame is drawn through the right
-        // one rather than through one frame of the wrong one.
-        bind_glyph_coverage(ctx, snapshot.theme());
+        // Before the first pass rasterises anything: the curve and the
+        // hinting below are inputs to the atlas, and egui rebuilds the atlas
+        // when they change. Setting them here means the first frame is drawn
+        // through the right ones rather than through one frame of the wrong
+        // ones, and the faces arrive already tuned.
+        let rendering = TextRendering::from_theme(snapshot.theme());
+        let mut fonts = FontTuner::default();
+        fonts.install(
+            ctx,
+            crate::fonts::design_system_definitions(),
+            rendering.hinting,
+        );
+        bind_text_options(ctx, &rendering);
         // Not `FontFaces::default()`: that points all three weight classes at
         // one family because egui's default stack has one proportional face.
         // The embedded stack has three, so `Bold` finally paints bold.
@@ -1468,6 +1313,10 @@ impl<A: App> Host<A> {
             last_tree: None,
             memo: None,
             content_stale: false,
+            text_override: None,
+            text_applied: rendering,
+            atlas: AtlasWatch::default(),
+            fonts,
             images_seen: 0,
             profile_clock: None,
             profile: None,
@@ -1576,7 +1425,9 @@ impl<A: App> Host<A> {
     /// still does, so the first frame after this call is the first one drawn
     /// with the new faces.
     pub fn install_script_fallbacks(&mut self, ctx: &Context) -> crate::fonts::FontStackReport {
-        let report = crate::fonts::install_desktop_fallbacks(ctx);
+        let (definitions, report) = crate::fonts::desktop_fallback_definitions();
+        self.fonts
+            .install(ctx, definitions, self.text_applied.hinting);
         self.shaper.clear();
         self.cache.clear();
         self.content_stale = true;
@@ -1600,6 +1451,84 @@ impl<A: App> Host<A> {
     #[must_use]
     pub fn presenter(&self) -> &Presenter {
         &self.presenter
+    }
+
+    /// Draw text with `rendering` instead of the theme's, or go back to the
+    /// theme's with `None`.
+    ///
+    /// This is how a user setting reaches the glyphs: the theme's
+    /// `text.coverage-curve` and the default hinting are the defaults, and an
+    /// application that has a per-machine preference replaces them whole.
+    /// Nothing is cleared or rebuilt when the value in force does not change,
+    /// so an application may call this every pass. A real change rebuilds
+    /// the glyph atlas once, on the next pass, and re-shapes every galley.
+    ///
+    /// # Errors
+    ///
+    /// [`PassesOutOfRange`] when `passes` is not finite or falls outside the
+    /// range a theme's token is held to. The override in force is left as
+    /// it was.
+    pub fn set_text_rendering(
+        &mut self,
+        rendering: Option<TextRendering>,
+    ) -> Result<(), PassesOutOfRange> {
+        if let Some(rendering) = &rendering {
+            rendering.check()?;
+        }
+        self.text_override = rendering;
+        let snapshot = self.presenter.current();
+        self.apply_text_rendering(snapshot.theme());
+        Ok(())
+    }
+
+    /// The text rendering in force: the application's override, or the
+    /// theme's.
+    #[must_use]
+    pub fn text_rendering(&self) -> TextRendering {
+        self.text_applied
+    }
+
+    /// How many times this host has seen epaint rebuild the glyph atlas. A
+    /// text-rendering change costs exactly one; so does the atlas filling
+    /// past epaint's own threshold.
+    #[must_use]
+    pub fn atlas_rebuilds(&self) -> u64 {
+        self.atlas.rebuilds()
+    }
+
+    /// Write the text rendering in force into the `Context` when it differs
+    /// from what was last written.
+    fn apply_text_rendering(&mut self, theme: &Theme) {
+        let rendering = self
+            .text_override
+            .unwrap_or_else(|| TextRendering::from_theme(theme));
+        if rendering == self.text_applied {
+            return;
+        }
+        bind_text_options(&self.ctx, &rendering);
+        if rendering.hinting != self.text_applied.hinting {
+            self.fonts.retune(&self.ctx, rendering.hinting);
+        }
+        self.text_applied = rendering;
+        // The atlas rebuilds at the start of the next egui pass, and
+        // `watch_atlas` drops the galleys then. Asking for that pass here
+        // is what makes a settings change show without the operator moving
+        // the mouse.
+        self.ctx.request_repaint();
+    }
+
+    /// At the top of every pass: drop whatever the last atlas rebuild
+    /// stranded, and retune a font stack that arrived untuned (an
+    /// application's own `Context::set_fonts`).
+    fn watch_atlas(&mut self, ctx: &Context) {
+        if self.atlas.observe(ctx) {
+            self.shaper.clear();
+            self.scene.clear();
+            self.content_stale = true;
+        }
+        if self.fonts.retune(ctx, self.text_applied.hinting) {
+            ctx.request_repaint();
+        }
     }
 
     /// Re-derive everything that is a function of the theme, from whatever
@@ -1649,7 +1578,7 @@ impl<A: App> Host<A> {
         // alike.
         self.prepared_stale = true;
         *self.shaper.typography_mut() = Typography::from_theme(theme, &self.faces);
-        bind_glyph_coverage(&self.ctx, theme);
+        self.apply_text_rendering(theme);
         // Every cached galley was shaped through the old map. The key
         // carries size, family and line height, so a stale entry could not
         // be *served* — but it can no longer be asked for either, and would
@@ -2046,6 +1975,9 @@ impl<A: App> Host<A> {
         let mut watch = Stopwatch::start(self.profile_clock);
         let mut profile = self.profile_clock.map(PassProfile::new);
         let (hits_before, misses_before) = self.cache.stats();
+        // First, before the application is asked anything: a font install it
+        // queues later in this pass must not be read back and overwritten.
+        self.watch_atlas(ctx);
         // Before the snapshot is read, not after: a theme asked for on the
         // last pass has to be in force for this one, or the frame the
         // operator sees is one behind his own click.
@@ -2067,6 +1999,13 @@ impl<A: App> Host<A> {
             && zoom != ctx.zoom_factor()
         {
             ctx.set_zoom_factor(zoom);
+        }
+        if let Some(rendering) = self.app.text_rendering_request() {
+            let applied = self.set_text_rendering(Some(rendering));
+            debug_assert!(
+                applied.is_ok(),
+                "the application asked for a text rendering out of range: {applied:?}"
+            );
         }
         let snapshot = self.presenter.current();
         // Before anything reads the registry: a theme published since the
@@ -2193,7 +2132,8 @@ impl<A: App> Host<A> {
                     if matches!(&changes, ChangeSet::Nodes(ids) if !ids.is_empty()) {
                         self.memo = None;
                     }
-                    self.paint_caret_on_last_frame(ctx, snapshot.as_ref());
+                    let tokens = WithCoverage::new(snapshot.as_ref(), self.text_applied.coverage);
+                    self.paint_caret_on_last_frame(ctx, &tokens);
                     return;
                 }
                 Some(changed) => authored = Some(changed),
@@ -2378,7 +2318,8 @@ impl<A: App> Host<A> {
         // already names the new node and the bar can leave on the same frame.
         let now = ctx.input(|input| input.time);
         self.tick_caret(&frame, now);
-        let mut report = self.paint_and_bake_scene(ctx, &frame, snapshot.as_ref());
+        let tokens = WithCoverage::new(snapshot.as_ref(), self.text_applied.coverage);
+        let mut report = self.paint_and_bake_scene(ctx, &frame, &tokens);
         if let Some(p) = profile.as_mut() {
             p.paint = watch.lap();
         }
@@ -5522,11 +5463,12 @@ fn first_difference(a: &PetrifiedFrame, b: &PetrifiedFrame) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, ChangeSet, FiredIntent, Host, coverage_plan, default_presenter, fired_behaviour,
-        petra_layer, refusal_view,
+        App, ChangeSet, FiredIntent, Host, default_presenter, fired_behaviour, petra_layer,
+        refusal_view,
     };
     use crate::testing::{boot, boot_in, boot_with, construct, construct_with, headless, step};
     use crate::text::CustomMeasureCtx;
+    use crate::text_rendering::coverage_plan;
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::frame::PetrifiedFrame;
     use gorgon_petra::geom::{Point, Rect, Scale, Size};
@@ -6834,12 +6776,13 @@ mod tests {
     ///   `n = 1`, the identity, the setting *most* exposed to the
     ///   per-character weight variance this text pipeline port exists to
     ///   close, not the least. Both shipped themes now assign
-    ///   `text.coverage-curve` the identical `passes: 3.0, snap: false`
-    ///   (`ef31ea8`), so a curve that still moved with the mode alone would
-    ///   be the same hardcode with an extra layer of indirection.
+    ///   `text.coverage-curve` the identical value (`passes: 1.0` since the
+    ///   operator's 2026-11-23 choice), so a curve that still moved with the
+    ///   mode alone would be the same hardcode with an extra layer of
+    ///   indirection.
     ///
     /// Both of egui's own per-theme styles are read, not just the active one,
-    /// because [`bind_glyph_coverage`] writes both on purpose: an application
+    /// because [`crate::text_rendering::bind_text_options`] writes both on purpose: an application
     /// that calls `Context::set_theme` must not thereby get a stale curve.
     #[test]
     fn the_glyph_coverage_curve_follows_the_theme_mode() {
@@ -6875,13 +6818,12 @@ mod tests {
         }
 
         let (ctx, mut host) = construct_with(Demo::default(), Presenter::new(light()));
-        // light's own text.coverage-curve is passes: 2.0 -- the one value
-        // the atlas curve spends instead of a second paint. Not
-        // TwoCoverageMinusCoverageSq "because it is light mode": see below.
+        // light's own text.coverage-curve is passes: 1.0 -- raw coverage,
+        // no curve. Not Off "because it is light mode": see below.
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
-            "light's shipped text.coverage-curve (passes: 2.0) must bind, in \
+            [FontColorTransferFunction::Off; 2],
+            "light's shipped text.coverage-curve (passes: 1.0) must bind, in \
              both of egui's styles, before the first pass rather than after it"
         );
 
@@ -6889,7 +6831,7 @@ mod tests {
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
+            [FontColorTransferFunction::Off; 2],
             "dark ships the identical text.coverage-curve as light, so the \
              curve must stay identical across the swap — this is the proof \
              the binder reads the token and not ThemeMode: a mode-keyed \
@@ -6900,29 +6842,38 @@ mod tests {
         // Now move the token itself, on the theme this host is already
         // publishing dark() as: the curve must follow the *value*, not stay
         // pinned at whatever a shipped theme happens to assign today.
-        host.presenter().publish(with_coverage(dark(), 3.0, false));
+        host.presenter().publish(with_coverage(dark(), 2.0, false));
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::Off; 2],
+            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
             "publishing a theme whose text.coverage-curve moved to \
-             passes: 3.0 must move the curve with it — an odd count is three \
-             paints through the identity curve; a stale curve is the defect \
-             both predecessor tests exist for"
+             passes: 2.0 must move the curve with it; a stale curve is the \
+             defect both predecessor tests exist for"
+        );
+
+        host.presenter().publish(with_coverage(dark(), 0.5, false));
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            bound(&ctx)
+                .iter()
+                .all(|curve| matches!(curve, FontColorTransferFunction::Gamma(g) if *g > 1.0)),
+            "passes: 0.5 thins edges through a gamma curve: {:?}",
+            bound(&ctx)
         );
 
         host.presenter().publish(light());
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
-            "and back to light's own passes: 2.0, so this asserts a binding \
+            [FontColorTransferFunction::Off; 2],
+            "and back to light's own passes: 1.0, so this asserts a binding \
              rather than a one-way latch"
         );
     }
 
     /// `coverage_plan` at every row the contract table names (`SPEC.md`
-    /// §6.3): `bind_glyph_coverage` and `crate::paint`'s repeat loop derive
+    /// §6.3): `bind_text_options` and `crate::paint`'s repeat loop derive
     /// both halves from this one function, so a wrong row here is a wrong
     /// picture on screen from both directions at once.
     #[test]

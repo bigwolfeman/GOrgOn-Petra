@@ -1394,7 +1394,7 @@ fn parse_hex(hex: &str, spec: &str) -> ColorValue {
 /// presents.
 ///
 /// Syntax is `passes[,snap]`: `3`, `3.5`, `4,snap`. `passes` is clamped to
-/// the `[1.0, 4.0]` range `Theme::build` accepts. `snap` sets
+/// the `[0.5, 4.0]` range `Theme::build` accepts. `snap` sets
 /// [`gorgon_petra::token::value::CoverageValue::snap`], which the host
 /// inverts into epaint's `subpixel_binning` — with it on, every glyph
 /// rasterises once at an integer x instead of at one of four sub-pixel
@@ -1428,7 +1428,7 @@ fn coverage_from_env(theme: Theme) -> Theme {
     values.insert(
         TokenName::new("text.coverage-curve").expect("a literal, well-formed token name"),
         TokenValue::Coverage(CoverageValue {
-            passes: passes.clamp(1.0, 4.0),
+            passes: passes.clamp(CoverageValue::MIN_PASSES, CoverageValue::MAX_PASSES),
             snap,
         }),
     );

@@ -209,7 +209,7 @@ impl SlotSchema {
 /// figure are all properties of one node's drawn shape, bound per node
 /// through `props.tokens`. The coverage curve answers a different question:
 /// how the text-rendering *atlas* composites coverage before any node's
-/// glyphs are drawn from it. `gorgon-petra-egui`'s `bind_glyph_coverage`
+/// glyphs are drawn from it. `gorgon-petra-egui`'s `bind_text_options`
 /// reads it once per theme revision, at `Host` scope, the same way it reads
 /// mode to pick a `FontColorTransferFunction` — not once per node the way
 /// `paint::RADIUS_SLOT` reads `radius`. A `SlotSpec` here would promise a

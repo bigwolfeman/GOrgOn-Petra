@@ -11,7 +11,7 @@ use super::{
     NodeChrome, PaintEnv, PaintReport, SELECTION_INK_SLOT, SELECTION_SLOT, UNDERLINE_SLOT,
     device_snapped_width, resolve_or_record, text_inset_x,
 };
-use crate::host::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
+use crate::text_rendering::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
 
 pub(super) fn paint_text(
     painter: &Painter,
@@ -147,7 +147,7 @@ pub(super) fn paint_text(
         // galley `repeats` times under egui-wgpu's premultiplied
         // source-over — which composites to `1 - (1-a)^repeats`, the same
         // identity the atlas curve itself rests on
-        // (`crate::host::coverage_plan`'s doc comment names the trap this
+        // (`crate::text_rendering::coverage_plan`'s doc comment names the trap this
         // is the other half of). `report.texts` and `shapes` count the
         // logical run once regardless of how many physical paints it took —
         // see this module's doc comment and `PaintReport`'s.

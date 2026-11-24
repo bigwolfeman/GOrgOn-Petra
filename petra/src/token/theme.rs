@@ -11,7 +11,7 @@ use std::fmt;
 
 use crate::token::ThemeMode;
 use crate::token::name::TokenName;
-use crate::token::value::{TokenKind, TokenValue};
+use crate::token::value::{CoverageValue, TokenKind, TokenValue};
 use crate::token::vocabulary::Vocabulary;
 
 /// Which of Carbon's four themes a [`Theme`] is: White, Gray 10, Gray 90 or
@@ -220,10 +220,11 @@ impl Theme {
 /// neither is this function's business.
 ///
 /// [`TokenValue::Coverage`] is the one exception: it is checked against its
-/// own legal range, `[1.0, 4.0]`
+/// own legal range, `[CoverageValue::MIN_PASSES, CoverageValue::MAX_PASSES]`
 /// (`ignored/builds/2026-08-24-text-pipeline-port/SPEC.md` §1.1, §6.1),
 /// rather than "not negative". A pass count of `0.0` composites nothing —
-/// it is not a smaller version of the effect, it is off — and a pass count
+/// it is not a smaller version of the effect, it is off; under `0.5` round
+/// letters break up — and a pass count
 /// above `4.0` is past ai-macs' own `maxTextSharpness` ceiling, never
 /// measured by either project. "Refuse outside the range, never clamp into
 /// it" is the same posture ai-macs' env parser takes for its three knobs
@@ -234,7 +235,11 @@ fn unusable_extent(value: &TokenValue) -> Option<&'static str> {
     match value {
         TokenValue::Spacing(units) => finite_and_nonnegative(*units),
         TokenValue::Shape(shape) => finite_and_nonnegative(shape.corner_radius),
-        TokenValue::Coverage(coverage) => finite_and_in_range(coverage.passes, 1.0, 4.0),
+        TokenValue::Coverage(coverage) => finite_and_in_range(
+            coverage.passes,
+            CoverageValue::MIN_PASSES,
+            CoverageValue::MAX_PASSES,
+        ),
         _ => None,
     }
 }
@@ -586,14 +591,14 @@ mod tests {
         vocab
     }
 
-    /// D4: a pass count outside `[1.0, 4.0]`, and NaN, are refused at
+    /// D4: a pass count outside `[0.5, 4.0]`, and NaN, are refused at
     /// `Theme::build` — the same "refuse, never clamp" posture
     /// [`a_negative_or_non_finite_extent_is_refused_and_named`] proves for
     /// spacing, but against `Coverage`'s own legal range rather than
     /// "not negative".
     #[test]
     fn a_coverage_pass_count_outside_its_legal_range_is_refused() {
-        for bad in [0.0_f32, 0.999, 4.001, 10.0, -1.0, f32::NAN, f32::INFINITY] {
+        for bad in [0.0_f32, 0.499, 4.001, 10.0, -1.0, f32::NAN, f32::INFINITY] {
             let mut values = BTreeMap::new();
             values.insert(
                 TokenName::new("text.coverage-curve").unwrap(),
@@ -618,7 +623,7 @@ mod tests {
     /// including both closed endpoints, is accepted.
     #[test]
     fn a_coverage_pass_count_inside_its_legal_range_is_usable() {
-        for ok in [1.0_f32, 1.5, 2.0, 3.0, 4.0] {
+        for ok in [0.5_f32, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0] {
             let mut values = BTreeMap::new();
             values.insert(
                 TokenName::new("text.coverage-curve").unwrap(),

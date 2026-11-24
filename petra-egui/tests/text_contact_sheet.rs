@@ -302,7 +302,7 @@ fn render_arm(
     let ctx = Context::default();
     fonts::install_design_system(&ctx);
 
-    // Both style slots, the same way `host::bind_glyph_coverage` does
+    // Both style slots, the same way `text_rendering::bind_text_options` does
     // (`petra-egui/src/host.rs:140-152`): a curve read from the wrong slot
     // because `ctx.theme()` disagreed with the slot written would be a
     // silent miss, not a loud one.

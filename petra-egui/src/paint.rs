@@ -298,12 +298,12 @@ pub trait TokenSource {
 
     /// The glyph coverage curve `token` resolves to, or `None` when the
     /// source has no such value — a `TokenSource` whose vocabulary predates
-    /// [`crate::host::COVERAGE_TOKEN`], or a fixture (most of this module's
+    /// [`crate::text_rendering::COVERAGE_TOKEN`], or a fixture (most of this module's
     /// own tests) that only ever implements [`TokenSource::color`]. The text
     /// paint path (below) falls back to
-    /// [`crate::host::FALLBACK_COVERAGE`] rather than treating `None` here
+    /// [`crate::text_rendering::FALLBACK_COVERAGE`] rather than treating `None` here
     /// as "paint once and stop asking" — the same defensive posture
-    /// [`crate::host::bind_glyph_coverage`] takes for the atlas half of this
+    /// [`crate::text_rendering::bind_text_options`] takes for the atlas half of this
     /// same token.
     fn coverage(&self, token: &str) -> Option<CoverageValue> {
         match self.value(token)? {
