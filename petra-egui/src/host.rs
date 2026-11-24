@@ -6776,7 +6776,7 @@ mod tests {
     ///   `n = 1`, the identity, the setting *most* exposed to the
     ///   per-character weight variance this text pipeline port exists to
     ///   close, not the least. Both shipped themes now assign
-    ///   `text.coverage-curve` the identical value (`passes: 1.0` since the
+    ///   `text.coverage-curve` the identical value (`passes: 1.25` since the
     ///   operator's 2026-11-23 choice), so a curve that still moved with the
     ///   mode alone would be the same hardcode with an extra layer of
     ///   indirection.
@@ -6818,12 +6818,13 @@ mod tests {
         }
 
         let (ctx, mut host) = construct_with(Demo::default(), Presenter::new(light()));
-        // light's own text.coverage-curve is passes: 1.0 -- raw coverage,
-        // no curve. Not Off "because it is light mode": see below.
+        // light's own text.coverage-curve is passes: 1.25 -- raw coverage in
+        // the atlas, the half pass added at paint time (`coverage_plan`).
+        // Not Off "because it is light mode": see below.
         assert_eq!(
             bound(&ctx),
             [FontColorTransferFunction::Off; 2],
-            "light's shipped text.coverage-curve (passes: 1.0) must bind, in \
+            "light's shipped text.coverage-curve (passes: 1.25) must bind, in \
              both of egui's styles, before the first pass rather than after it"
         );
 
@@ -6867,7 +6868,7 @@ mod tests {
         assert_eq!(
             bound(&ctx),
             [FontColorTransferFunction::Off; 2],
-            "and back to light's own passes: 1.0, so this asserts a binding \
+            "and back to light's own passes: 1.25, so this asserts a binding \
              rather than a one-way latch"
         );
     }

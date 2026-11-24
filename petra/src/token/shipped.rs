@@ -2874,15 +2874,18 @@ fn build(palette: &Palette) -> Theme {
     // `insert_support_aliases` for why an alias may not carry its own hex.
     insert_support_aliases(&mut values);
 
-    // Raw coverage, no compositing: the operator's default (2026-11-23).
-    // The old `2.0` darkened every anti-aliased pixel on a round letter
-    // toward full ink, and the bowls read as stair steps. A machine that
-    // wants a heavier or lighter edge sets it per user; see
-    // `gorgon-petra-egui`'s `TextRendering`.
+    // One and a quarter passes: the operator's pick from a side-by-side A/B
+    // at 1x, paired with full hinting (2026-11-23), over 1.0 and 1.5. Raw
+    // coverage (`1.0`) left the thin strokes grey next to the snapped stems,
+    // 1.5 read a little heavy; the old `2.0`
+    // darkened every anti-aliased pixel on a round letter toward full ink
+    // and the bowls read as stair steps. A machine that wants a heavier or
+    // lighter edge sets it per user; see `gorgon-petra-egui`'s
+    // `TextRendering`.
     values.insert(
         name("text.coverage-curve"),
         TokenValue::Coverage(CoverageValue {
-            passes: 1.0,
+            passes: 1.25,
             snap: false,
         }),
     );
@@ -4172,10 +4175,10 @@ mod tests {
             assert_eq!(
                 theme.value(&token),
                 Some(&TokenValue::Coverage(CoverageValue {
-                    passes: 1.0,
+                    passes: 1.25,
                     snap: false
                 })),
-                "{label} theme's text.coverage-curve must be passes: 1.0, snap: false"
+                "{label} theme's text.coverage-curve must be passes: 1.25, snap: false"
             );
         }
     }

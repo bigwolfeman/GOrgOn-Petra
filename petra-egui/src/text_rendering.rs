@@ -51,7 +51,7 @@ pub const COVERAGE_TOKEN: &str = "text.coverage-curve";
 /// older vocabulary draws text the way a current one does. `snap: false`
 /// matches every theme this workspace has ever shipped.
 pub const FALLBACK_COVERAGE: CoverageValue = CoverageValue {
-    passes: 1.0,
+    passes: 1.25,
     snap: false,
 };
 
@@ -86,6 +86,12 @@ pub enum Hinting {
     /// target runs a TrueType font in v40 backward-compatibility mode, which
     /// drops horizontal moves, so "normal" smooth hinting draws pixel for
     /// pixel what light does on IBM Plex and is not a third choice.
+    ///
+    /// The default: picked by the operator from a side-by-side A/B of every
+    /// coverage and hinting pair at 1x (2026-11-23), together with
+    /// `passes: 1.25`. The fractional pass puts weight back on the thin
+    /// strokes that whole-pixel stems leave grey.
+    #[default]
     Full,
     /// Fit vertical metrics only (FreeType's `hintslight`, and what its v40
     /// interpreter does for any smooth target): baselines and x-height land
@@ -93,7 +99,6 @@ pub enum Hinting {
     /// The default most Linux desktops ship, and what egui's own default
     /// tweak already drew, so it is the mode every Petra build drew with
     /// before this setting existed.
-    #[default]
     Light,
     /// Rasterise the unhinted outline. Truest shapes, softest stems.
     Off,

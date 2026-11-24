@@ -126,7 +126,7 @@ fn a_change_rebuilds_the_atlas_once_and_retunes_every_face() {
     assert_eq!(host.text_rendering(), TextRendering::default());
     assert_eq!(
         loaded_targets(&ctx),
-        [(Some(true), Hinting::Light.target())]
+        [(Some(true), Hinting::default().target())]
     );
     let before = host.atlas_rebuilds();
 
@@ -157,7 +157,7 @@ fn a_change_rebuilds_the_atlas_once_and_retunes_every_face() {
     assert_eq!(host.text_rendering(), TextRendering::default());
     assert_eq!(
         loaded_targets(&ctx),
-        [(Some(true), Hinting::Light.target())]
+        [(Some(true), Hinting::default().target())]
     );
 }
 
@@ -201,7 +201,7 @@ fn a_hand_installed_stack_is_retuned() {
     passes(&ctx, &mut host, 4);
     assert_eq!(
         loaded_targets(&ctx),
-        [(Some(true), Hinting::Light.target())]
+        [(Some(true), Hinting::default().target())]
     );
 }
 
