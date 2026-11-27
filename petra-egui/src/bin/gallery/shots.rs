@@ -6865,17 +6865,35 @@ mod tests {
              {:?}",
             cam.ring()
         );
-        // A menu item wears `BarInside` since 2026-09-06 — items stack
-        // flush, so its stripe sits on its own bottom edge rather than five
-        // units below it, on the next item. Read the middle of that stripe.
-        // Probing the item's *top* edge, where a ring's band used to be,
-        // now reads the item's own fill and says nothing.
+        // A menu item wears `BarInside` since 2026-09-06: items stack
+        // flush, so its stripe sits on its own bottom edge. Since 2026-11-27
+        // a menu row is quiet after a pointer press
+        // (`focus_quiet_on_press`, as `:focus-visible`): the click that
+        // opened the menu leaves the stripe hidden, and the first key shows
+        // it on whichever item holds focus.
         let stripe = ring.bar_inside(marked_run(cam.frame(), "mn-0"));
         let on_item = px(&open, stripe.x + stripe.w / 2.0, stripe.y + stripe.h / 2.0);
+        assert_ne!(
+            on_item, accent,
+            "a menu the pointer opened showed a focus stripe on its first item"
+        );
+        cam.key(KeyCode::Down);
+        let keyed = raster(&mut cam, "18-menu-open-keyed");
+        let held = cam
+            .ring()
+            .filter(|id| id.ends_with("mn-0") || id.ends_with("mn-1"))
+            .unwrap_or_else(|| panic!("a key left focus off the menu: {:?}", cam.ring()));
+        let item = if held.ends_with("mn-0") {
+            "mn-0"
+        } else {
+            "mn-1"
+        };
+        let stripe = ring.bar_inside(marked_run(cam.frame(), item));
+        let on_item = px(&keyed, stripe.x + stripe.w / 2.0, stripe.y + stripe.h / 2.0);
         assert_eq!(
             on_item, accent,
-            "the menu's first item did not take its focus stripe in the same \
-             accent the trigger's brackets were drawn in"
+            "after a key, the focused menu item did not take its focus stripe \
+             in the same accent the trigger's brackets were drawn in"
         );
         let [left, _] = ring.sides(trigger);
         assert_ne!(

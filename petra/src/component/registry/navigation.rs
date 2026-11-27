@@ -30,16 +30,17 @@ use crate::component::{
     content_switcher_low_contrast_lg, content_switcher_low_contrast_sm, content_switcher_sm,
     document_tab, document_tab_bar, link, link_inline, link_with_icon, menu, menu_border,
     menu_button, menu_button_ghost, menu_button_lg, menu_button_sm, menu_button_tertiary,
-    menu_button_xs, menu_flyout, menu_item, menu_item_group, menu_item_radio_group,
-    menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu, menu_with_icons, menu_xs,
-    menubar, menubar_top, overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs,
-    pagination, pagination_items, pagination_items_lg, pagination_items_open, pagination_items_sm,
-    pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open, pagination_nav_sm,
-    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
-    pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm, pagination_range,
-    pagination_sm, tab, tab_bar, tab_with_icon, ui_shell_header, ui_shell_header_action,
-    ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+    menu_button_xs, menu_flyout, menu_item, menu_item_divider, menu_item_group,
+    menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu,
+    menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg,
+    overflow_menu_sm, overflow_menu_xs, pagination, pagination_items, pagination_items_lg,
+    pagination_items_open, pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg,
+    pagination_nav_open, pagination_nav_sm, pagination_numbers, pagination_numbers_lg,
+    pagination_numbers_sm, pagination_page_size, pagination_prev_next, pagination_prev_next_lg,
+    pagination_prev_next_sm, pagination_range, pagination_sm, tab, tab_bar, tab_with_icon,
+    ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
     ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
     ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
     ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
@@ -657,6 +658,7 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_item_selectable", MenuItemSelectableParams, |p| {
         menu_item_selectable(p.key, p.label, p.icon.map(Into::into), p.selected)
     }),
+    row!("menu_item_divider", KeyOnly, |p| menu_item_divider(p.key)),
     row!("menu_item_group", KeyLabelChildren, |p| menu_item_group(
         p.key, p.label, p.children
     )),
@@ -1146,6 +1148,7 @@ mod tests {
             "menu_item_selectable" => json!({
                 "key": "k-mi-sel", "label": "l", "icon": "copy", "selected": true
             }),
+            "menu_item_divider" => json!({ "key": "k-mi-div" }),
             "menu_item_group" => {
                 json!({ "key": "k-mi-group", "label": "l", "children": [] })
             }
