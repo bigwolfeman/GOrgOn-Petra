@@ -18,6 +18,7 @@ pub mod anim;
 pub mod cache;
 pub mod component;
 pub mod draw;
+pub mod edit;
 pub mod focus;
 pub mod frame;
 pub mod geom;

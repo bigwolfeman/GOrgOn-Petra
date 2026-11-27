@@ -19,7 +19,9 @@
 //! [`gorgon_petra::frame::PlacementSemantics::focused`] is projected from.
 //! [`crate::focus_caret::FocusCaret`] interpolates the underline between
 //! those targets; Tab and Shift+Tab are consumed here for traversal rather
-//! than delivered to the application; everything else is routed. That is the
+//! than delivered to the application, unless focus sits inside a raw claim
+//! (an editor or a terminal takes Tab as a key; Shift+Escape leaves it);
+//! everything else is routed. That is the
 //! whole of the wiring, and it is deliberately in the host: `gorgon-petra`
 //! decides *what* focus does, this crate decides *when*.
 //!
@@ -3551,13 +3553,15 @@ impl<A: App> Host<A> {
     /// Move focus if `event` is a traversal keystroke, and report whether it
     /// was consumed.
     ///
-    /// **Tab and Shift+Tab always traverse**, whatever the focused node
-    /// declares, and never reach [`App::handle`]. FR-025 makes every
-    /// interactive node reachable by keyboard; if a focused node could swallow
-    /// Tab, reachability would depend on every application getting that right,
-    /// and the authoring vocabulary has no "this node wants a literal Tab"
-    /// opt-in to make swallowing safe. A node that needs one needs that flag
-    /// first — see this crate's README.
+    /// **Tab and Shift+Tab traverse** whatever the focused node declares,
+    /// and never reach [`App::handle`], with one exception: focus inside a
+    /// raw claim ([`gorgon_petra::tree::ViewNode::with_raw_claim`]). FR-025
+    /// makes every interactive node reachable by keyboard; if any focused
+    /// node could swallow Tab, reachability would depend on every application
+    /// getting that right. The raw claim is the opt-in that makes swallowing
+    /// safe: spec 010 pairs it with a reserved escape (Shift+Escape) that no
+    /// claim can capture, so focus always has a way out, and an editor or a
+    /// terminal gets the literal Tab it needs (spec 006 FR-013).
     ///
     /// **Home and End traverse only when the focused node cannot use them**,
     /// i.e. when it does not declare [`Interaction::Key`]. Unlike Tab they
@@ -3582,6 +3586,16 @@ impl<A: App> Host<A> {
             return false;
         }
         match key {
+            // A raw claimant takes Tab as its own key (an editor indents,
+            // a terminal completes); Shift+Escape, the reserved escape, is
+            // how focus leaves it.
+            KeyCode::Tab
+                if self.last_frame.as_ref().is_some_and(|frame| {
+                    gorgon_petra::input::under_raw_claim(frame, self.focus.current())
+                }) =>
+            {
+                return false;
+            }
             KeyCode::Tab => {
                 let step = if modifiers.shift { -1 } else { 1 };
                 let from = self.focus.current().map(str::to_owned);
@@ -6213,6 +6227,8 @@ mod tests {
         slider: bool,
         /// The filter declares `focus_quiet_on_press`, as a list row does.
         quiet_filter: bool,
+        /// The filter holds a raw claim, as an editor's code view does.
+        raw_filter: bool,
         /// Bind `label`'s text to `title` and its `disabled` to `flag` — one
         /// layout property and one paint property on one node, so the two
         /// dirty classes are separable (task R-2). Nothing else in the tree
@@ -6390,6 +6406,11 @@ mod tests {
                             "Filter fibers",
                             &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
                         );
+                    let filter = if self.raw_filter {
+                        filter.with_raw_claim()
+                    } else {
+                        filter
+                    };
                     if self.quiet_filter {
                         filter.with_focus_quiet_on_press()
                     } else {
@@ -7442,6 +7463,32 @@ mod tests {
             Some("/root/filter"),
             "Shift+Tab moves back"
         );
+    }
+
+    /// Spec 006 FR-013: focus inside a raw claim keeps Tab and Shift+Tab as
+    /// keys. They reach the application on the claimant instead of moving
+    /// focus, so an editor can indent.
+    #[test]
+    fn a_raw_claim_keeps_tab_as_a_key() {
+        let (ctx, mut host) = boot(Demo {
+            raw_filter: true,
+            ..Demo::default()
+        });
+        assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::SHIFT));
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/filter"),
+            "Tab did not traverse out of the claim"
+        );
+        let tabs = host
+            .app()
+            .seen
+            .iter()
+            .filter(|(k, w)| k == "key:Tab" && w == "/root/filter")
+            .count();
+        assert_eq!(tabs, 2, "both presses reached the claimant: {:?}", host.app().seen);
     }
 
     /// A deferred Tab target that exists but never becomes visible is retried

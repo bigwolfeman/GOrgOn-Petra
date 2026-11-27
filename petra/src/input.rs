@@ -896,6 +896,16 @@ fn reserved_or_raw(
     None
 }
 
+/// Whether focus sits inside a raw claim: `focused` itself or an ancestor
+/// declared one. A host asks this before it treats Tab as focus traversal,
+/// because a raw claimant (an editor, a terminal) takes Tab as a key of its
+/// own; the reserved escape is how focus leaves it (spec 010, spec 006
+/// FR-013).
+#[must_use]
+pub fn under_raw_claim(frame: &PetrifiedFrame, focused: Option<&str>) -> bool {
+    raw_claimant(frame, focused).is_some()
+}
+
 /// The node holding the raw claim that focus sits inside: `focused` itself
 /// or its nearest ancestor that declared one. Private to
 /// [`reserved_or_raw`], which is the one place that asks (FR-005).
