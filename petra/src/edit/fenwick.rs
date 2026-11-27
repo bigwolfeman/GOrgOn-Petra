@@ -90,7 +90,10 @@ mod tests {
         let total: usize = counts.iter().sum();
         for t in 0..total {
             let i = f.find(t);
-            assert!(linear(&counts, i) <= t && t < linear(&counts, i + 1), "t={t} i={i}");
+            assert!(
+                linear(&counts, i) <= t && t < linear(&counts, i + 1),
+                "t={t} i={i}"
+            );
         }
         assert_eq!(f.find(total), counts.len());
         f.add(1, 4);

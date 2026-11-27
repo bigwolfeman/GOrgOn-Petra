@@ -25,7 +25,9 @@ use super::text::text;
 use super::tokens::t;
 use crate::frame::{PetrifiedFrame, Placement};
 use crate::geom::{Align, Axis, Point};
-use crate::tree::{InsetRefs, Interaction, NodeKind, Props, Role, TextCursor, TextRun, TextWrap, ViewNode};
+use crate::tree::{
+    InsetRefs, Interaction, NodeKind, Props, Role, TextCursor, TextRun, TextWrap, ViewNode,
+};
 
 /// The key of the scroll that holds the rows: the node whose scroll offset
 /// sideways moves change, and the one that holds focus.
@@ -66,6 +68,12 @@ pub fn line_key(number: u64) -> String {
     format!("line-{number}")
 }
 
+/// The 1-based line number a row key names, the inverse of [`line_key`].
+#[must_use]
+pub fn line_of_key(key: &str) -> Option<u64> {
+    key.strip_prefix("line-")?.parse().ok()
+}
+
 /// What one row shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CodeLine {
@@ -100,7 +108,11 @@ pub fn code_line(line: CodeLine) -> ViewNode {
     // the gutter is furniture. A lightness step, not a hue.
     gutter.props.tokens.insert(
         "foreground".into(),
-        t(if current { "text.primary" } else { "text.faint" }),
+        t(if current {
+            "text.primary"
+        } else {
+            "text.faint"
+        }),
     );
     let mut cell = flush("gutter-cell", Axis::Horizontal, vec![gutter]);
     cell.props.padding = Some(InsetRefs {
@@ -110,9 +122,10 @@ pub fn code_line(line: CodeLine) -> ViewNode {
     });
     cell.props.pinned = Some(true);
     cell.props.z = Some(1);
-    cell.props
-        .tokens
-        .insert("background".into(), t(if current { CURRENT_LINE } else { GROUND }));
+    cell.props.tokens.insert(
+        "background".into(),
+        t(if current { CURRENT_LINE } else { GROUND }),
+    );
     let mut code = code_text("text", content);
     code.props.runs = runs;
     code.props.cursor = caret.map(TextCursor::at);
@@ -122,7 +135,9 @@ pub fn code_line(line: CodeLine) -> ViewNode {
         ..InsetRefs::default()
     });
     if current {
-        row.props.tokens.insert("background".into(), t(CURRENT_LINE));
+        row.props
+            .tokens
+            .insert("background".into(), t(CURRENT_LINE));
     }
     row
 }
@@ -225,7 +240,11 @@ pub fn locate(frame: &PetrifiedFrame, source: &str, pos: Point, reach: bool) -> 
         .filter(|p| p.parent == Some(index) && p.rect.h > 0.0);
     let row = if reach {
         rows.min_by(|a, b| {
-            let gap = |p: &&Placement| (p.rect.y - pos.y).max(pos.y - (p.rect.y + p.rect.h)).max(0.0);
+            let gap = |p: &&Placement| {
+                (p.rect.y - pos.y)
+                    .max(pos.y - (p.rect.y + p.rect.h))
+                    .max(0.0)
+            };
             gap(a).total_cmp(&gap(b))
         })?
     } else {
@@ -293,6 +312,12 @@ mod tests {
     }
 
     #[test]
+    fn a_row_key_names_its_line_and_back() {
+        assert_eq!(super::line_of_key(&super::line_key(42)), Some(42));
+        assert_eq!(super::line_of_key("gutter-cell"), None);
+    }
+
+    #[test]
     fn a_row_carries_the_caret_on_its_text_and_bands_the_current_line() {
         let row = code_line(CodeLine {
             number: 7,
@@ -315,7 +340,14 @@ mod tests {
 
     #[test]
     fn the_view_claims_raw_keys_only_when_editable() {
-        let edit = code_view("a.rs", 10, "rows".into(), 1.0, Some(code_ruler("x".into(), 2)), true);
+        let edit = code_view(
+            "a.rs",
+            10,
+            "rows".into(),
+            1.0,
+            Some(code_ruler("x".into(), 2)),
+            true,
+        );
         let read = code_view("a.rs", 10, "rows".into(), 1.0, None, false);
         assert!(edit.raw_claim);
         assert!(!read.raw_claim);

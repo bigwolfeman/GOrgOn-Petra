@@ -176,7 +176,11 @@ pub fn byte_at_cells(text: &str, cells: usize, tab: usize) -> usize {
     let tab = tab.max(1);
     let mut at = 0;
     for (i, c) in text.char_indices() {
-        let next = if c == '\t' { (at / tab + 1) * tab } else { at + 1 };
+        let next = if c == '\t' {
+            (at / tab + 1) * tab
+        } else {
+            at + 1
+        };
         if next > cells {
             // Round to the nearer edge, as a press between two cells does.
             return if cells - at > (next - at) / 2 && next - at > 1 {
@@ -215,7 +219,10 @@ pub fn vertical(
         return (buffer.len_bytes(), goal);
     }
     let text = buffer.line(target);
-    (buffer.line_start(target) + byte_at_cells_floor(&text, goal, tab), goal)
+    (
+        buffer.line_start(target) + byte_at_cells_floor(&text, goal, tab),
+        goal,
+    )
 }
 
 /// The byte offset of the last char edge at or before drawn column `cells`.
@@ -223,7 +230,11 @@ fn byte_at_cells_floor(text: &str, cells: usize, tab: usize) -> usize {
     let tab = tab.max(1);
     let mut at = 0;
     for (i, c) in text.char_indices() {
-        let next = if c == '\t' { (at / tab + 1) * tab } else { at + 1 };
+        let next = if c == '\t' {
+            (at / tab + 1) * tab
+        } else {
+            at + 1
+        };
         if next > cells {
             return i;
         }

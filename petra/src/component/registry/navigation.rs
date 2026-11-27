@@ -28,18 +28,19 @@ use crate::component::{
     content_switcher_item_icon_popover_with_size, content_switcher_item_icon_with_size,
     content_switcher_item_low_contrast, content_switcher_lg, content_switcher_low_contrast,
     content_switcher_low_contrast_lg, content_switcher_low_contrast_sm, content_switcher_sm,
-    document_tab, document_tab_bar, document_tab_dirty, link, link_inline, link_with_icon, menu, menu_border,
-    menu_button, menu_button_ghost, menu_button_lg, menu_button_sm, menu_button_tertiary,
-    menu_button_xs, menu_flyout, menu_item, menu_item_group, menu_item_radio_group,
-    menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu, menu_with_icons, menu_xs,
-    menubar, menubar_top, overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs,
-    pagination, pagination_items, pagination_items_lg, pagination_items_open, pagination_items_sm,
-    pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open, pagination_nav_sm,
-    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
-    pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm, pagination_range,
-    pagination_sm, tab, tab_bar, tab_with_icon, ui_shell_header, ui_shell_header_action,
-    ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+    document_tab, document_tab_bar, document_tab_dirty, link, link_inline, link_with_icon, menu,
+    menu_border, menu_button, menu_button_ghost, menu_button_lg, menu_button_sm,
+    menu_button_tertiary, menu_button_xs, menu_flyout, menu_item, menu_item_group,
+    menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu,
+    menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg,
+    overflow_menu_sm, overflow_menu_xs, pagination, pagination_items, pagination_items_lg,
+    pagination_items_open, pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg,
+    pagination_nav_open, pagination_nav_sm, pagination_numbers, pagination_numbers_lg,
+    pagination_numbers_sm, pagination_page_size, pagination_prev_next, pagination_prev_next_lg,
+    pagination_prev_next_sm, pagination_range, pagination_sm, tab, tab_bar, tab_with_icon,
+    ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
     ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
     ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
     ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
@@ -823,9 +824,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("document_tab_bar", KeyChildren, |p| document_tab_bar(
         p.key, p.children
     )),
-    row!("document_tab_dirty", KeyLabelSelected, |p| document_tab_dirty(
-        p.key, p.label, p.selected
-    )),
+    row!("document_tab_dirty", KeyLabelSelected, |p| {
+        document_tab_dirty(p.key, p.label, p.selected)
+    }),
     row!("chrome_icon_tab", TabWithIconParams, |p| chrome_icon_tab(
         p.key,
         p.mark.into(),
@@ -1264,7 +1265,9 @@ mod tests {
             "tab_bar" => json!({ "key": "k", "children": [] }),
             "document_tab" => json!({ "key": "k-doc", "label": "l-doc", "selected": true }),
             "document_tab_bar" => json!({ "key": "k-doc-bar", "children": [] }),
-            "document_tab_dirty" => json!({ "key": "k-doc-d", "label": "l-doc-d", "selected": false }),
+            "document_tab_dirty" => {
+                json!({ "key": "k-doc-d", "label": "l-doc-d", "selected": false })
+            }
             "chrome_icon_tab" => json!({
                 "key": "k-cit", "label": "l-cit", "selected": true, "mark": "document"
             }),

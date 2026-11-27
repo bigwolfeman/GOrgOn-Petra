@@ -613,7 +613,10 @@ pub fn document_tab_dirty(
         DIRTY_MARK,
         Some(ink),
         None,
-        Some(crate::token::corner_for(crate::token::CornerRole::Pill, DIRTY_MARK)),
+        Some(crate::token::corner_for(
+            crate::token::CornerRole::Pill,
+            DIRTY_MARK,
+        )),
     );
     if let Some(body) = node
         .children

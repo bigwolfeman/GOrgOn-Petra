@@ -308,7 +308,8 @@ impl TextBuffer {
                 Arc::make_mut(&mut self.chunks[i]).replace_range(off_s..off_e, text);
                 self.bytes
                     .add(i, text.len() as isize - (off_e - off_s) as isize);
-                self.newlines.add(i, added_nl as isize - removed_nl as isize);
+                self.newlines
+                    .add(i, added_nl as isize - removed_nl as isize);
                 self.len = self.len - (end - start) + text.len();
                 self.lines_total = self.lines_total - removed_nl + added_nl;
                 return;
@@ -378,7 +379,11 @@ impl TextBuffer {
 
 impl PartialEq for TextBuffer {
     fn eq(&self, other: &Self) -> bool {
-        self.len == other.len && self.chunks().flat_map(str::bytes).eq(other.chunks().flat_map(str::bytes))
+        self.len == other.len
+            && self
+                .chunks()
+                .flat_map(str::bytes)
+                .eq(other.chunks().flat_map(str::bytes))
     }
 }
 
@@ -445,7 +450,10 @@ mod tests {
         for (n, start) in starts.iter().enumerate() {
             assert_eq!(buffer.line_start(n), *start, "line_start({n})");
         }
-        for (at, _) in model.char_indices().chain(std::iter::once((model.len(), ' '))) {
+        for (at, _) in model
+            .char_indices()
+            .chain(std::iter::once((model.len(), ' ')))
+        {
             let line = starts.partition_point(|s| *s <= at) - 1;
             assert_eq!(buffer.line_of(at), line, "line_of({at})");
         }
@@ -505,7 +513,17 @@ mod tests {
     /// including multi-byte text and edits across chunk edges.
     #[test]
     fn random_edits_match_a_string_model() {
-        let pieces = ["a", "é", "漢", "\n", "xyz\n", "😀", "", "\n\n", "longer piece of text "];
+        let pieces = [
+            "a",
+            "é",
+            "漢",
+            "\n",
+            "xyz\n",
+            "😀",
+            "",
+            "\n\n",
+            "longer piece of text ",
+        ];
         let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = move || {
             seed ^= seed << 13;
@@ -526,7 +544,8 @@ mod tests {
             let a = bounds[(next() as usize) % bounds.len()];
             let span = (next() as usize) % 40;
             let bi = bounds.partition_point(|x| *x < a);
-            let e = bounds[(bi + if next() % 3 == 0 { span * 20 } else { span }).min(bounds.len() - 1)];
+            let e =
+                bounds[(bi + if next() % 3 == 0 { span * 20 } else { span }).min(bounds.len() - 1)];
             let mut text = String::new();
             for _ in 0..(next() % 4) {
                 text.push_str(pieces[(next() as usize) % pieces.len()]);

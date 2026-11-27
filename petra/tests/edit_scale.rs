@@ -24,7 +24,9 @@ fn synthetic() -> String {
         match i % 5 {
             0 => out.push_str(&format!("fn item_{i}(x: u32) -> u32 {{\n")),
             1 => out.push_str("    // a comment with some words in it\n"),
-            2 => out.push_str(&format!("    let value = x * {i} + \"text\".len() as u32;\n")),
+            2 => out.push_str(&format!(
+                "    let value = x * {i} + \"text\".len() as u32;\n"
+            )),
             3 => out.push_str("    value\n"),
             _ => out.push_str("}\n"),
         }

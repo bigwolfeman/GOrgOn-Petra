@@ -1498,6 +1498,14 @@ impl<A: App> Host<A> {
         self.atlas.rebuilds()
     }
 
+    /// Ask the window for one more pass. For an application that learns
+    /// after a pass, from the frame it placed, that it needs another: a
+    /// reveal measured off placed rows waits in the application until a pass
+    /// takes it, and an idle window runs none until the next input.
+    pub fn request_pass(&self) {
+        self.ctx.request_repaint();
+    }
+
     /// Write the text rendering in force into the `Context` when it differs
     /// from what was last written.
     fn apply_text_rendering(&mut self, theme: &Theme) {
@@ -3589,9 +3597,21 @@ impl<A: App> Host<A> {
             // A raw claimant takes Tab as its own key (an editor indents,
             // a terminal completes); Shift+Escape, the reserved escape, is
             // how focus leaves it.
+            // Asked through the routing every event takes, the one place that
+            // decides an event is raw (spec 010 FR-005).
             KeyCode::Tab
                 if self.last_frame.as_ref().is_some_and(|frame| {
-                    gorgon_petra::input::under_raw_claim(frame, self.focus.current())
+                    matches!(
+                        gorgon_petra::input::route_with_surfaces(
+                            frame,
+                            self.focus.current(),
+                            event,
+                            &self.last_scopes,
+                            self.pointer.reserved(),
+                        )
+                        .route,
+                        Route::Raw { .. }
+                    )
                 }) =>
             {
                 return false;
@@ -7488,7 +7508,12 @@ mod tests {
             .iter()
             .filter(|(k, w)| k == "key:Tab" && w == "/root/filter")
             .count();
-        assert_eq!(tabs, 2, "both presses reached the claimant: {:?}", host.app().seen);
+        assert_eq!(
+            tabs,
+            2,
+            "both presses reached the claimant: {:?}",
+            host.app().seen
+        );
     }
 
     /// A deferred Tab target that exists but never becomes visible is retried

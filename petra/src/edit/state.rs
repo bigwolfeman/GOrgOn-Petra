@@ -356,7 +356,10 @@ impl EditorState {
                 None => carets.push(None),
             }
         }
-        if changes.iter().all(|c| c.range.is_empty() && c.text.is_empty()) {
+        if changes
+            .iter()
+            .all(|c| c.range.is_empty() && c.text.is_empty())
+        {
             return Outcome::default();
         }
         let before = self.selections.clone();
@@ -383,8 +386,15 @@ impl EditorState {
             }
         }
         self.selections = Selections::from_vec(items, primary);
-        self.history
-            .record(transaction, inverse, &before, &self.selections, kind, mergeable, now_ms);
+        self.history.record(
+            transaction,
+            inverse,
+            &before,
+            &self.selections,
+            kind,
+            mergeable,
+            now_ms,
+        );
         self.version += 1;
         Outcome {
             edited: true,
@@ -426,8 +436,15 @@ impl EditorState {
                 Selection::new(end, start)
             }
         });
-        self.history
-            .record(transaction, inverse, &before, &self.selections, kind, mergeable, now_ms);
+        self.history.record(
+            transaction,
+            inverse,
+            &before,
+            &self.selections,
+            kind,
+            mergeable,
+            now_ms,
+        );
         self.version += 1;
         Outcome {
             edited: true,
@@ -472,7 +489,8 @@ impl EditorState {
             let text = b.line(line);
             let col = range.start - line_range.start;
             let before = &text[..col];
-            let after_end = (range.end.min(line_range.end)).max(line_range.start) - line_range.start;
+            let after_end =
+                (range.end.min(line_range.end)).max(line_range.start) - line_range.start;
             let after = &text[after_end.max(col)..];
             let indent: String = text
                 .chars()
@@ -497,7 +515,10 @@ impl EditorState {
             match opens {
                 Some(open @ ('{' | '(' | '[')) => {
                     let inner = format!("\n{indent}{unit}");
-                    let pair = matches!((open, closes), ('{', Some('}')) | ('(', Some(')')) | ('[', Some(']')));
+                    let pair = matches!(
+                        (open, closes),
+                        ('{', Some('}')) | ('(', Some(')')) | ('[', Some(']'))
+                    );
                     let text = if pair {
                         format!("{inner}\n{indent}")
                     } else {
@@ -537,9 +558,7 @@ impl EditorState {
             }
             let line_start = b.line_start(b.line_of(at));
             let lead = b.slice(line_start..at);
-            let from = if config.insert_spaces
-                && at > line_start
-                && lead.bytes().all(|c| c == b' ')
+            let from = if config.insert_spaces && at > line_start && lead.bytes().all(|c| c == b' ')
             {
                 // Back to the previous tab stop inside leading spaces.
                 let cols = lead.len();
@@ -618,7 +637,8 @@ impl EditorState {
 
     fn indent(&mut self, now_ms: u64) -> Outcome {
         let multi_line = self.selections.iter().any(|s| {
-            !s.is_empty() && self.buffer.line_of(s.range().start) != self.buffer.line_of(s.range().end)
+            !s.is_empty()
+                && self.buffer.line_of(s.range().start) != self.buffer.line_of(s.range().end)
         });
         if !multi_line {
             let tab = self.config.tab_size.max(1);
@@ -913,7 +933,10 @@ mod tests {
         s.mark_saved();
         assert!(!s.is_dirty());
         typ(&mut s, "b", 1);
-        assert!(s.is_dirty(), "typing after a save does not merge into the saved group");
+        assert!(
+            s.is_dirty(),
+            "typing after a save does not merge into the saved group"
+        );
         s.apply(C::Undo, 2);
         assert!(!s.is_dirty());
         assert_eq!(s.buffer().to_string(), "ax");
@@ -940,7 +963,13 @@ mod tests {
     #[test]
     fn backspace_in_leading_spaces_goes_to_the_previous_stop() {
         let mut s = state("      x");
-        s.apply(C::PlaceCaret { at: 6, extend: false }, 0);
+        s.apply(
+            C::PlaceCaret {
+                at: 6,
+                extend: false,
+            },
+            0,
+        );
         s.apply(C::Backspace, 0);
         assert_eq!(s.buffer().to_string(), "    x");
         s.apply(C::Backspace, 0);
@@ -957,7 +986,13 @@ mod tests {
         assert_eq!(s.buffer().to_string(), "    a\n    b\nc");
         s.apply(C::Outdent, 0);
         assert_eq!(s.buffer().to_string(), "a\nb\nc");
-        s.apply(C::PlaceCaret { at: 1, extend: false }, 0);
+        s.apply(
+            C::PlaceCaret {
+                at: 1,
+                extend: false,
+            },
+            0,
+        );
         s.apply(C::Indent, 0);
         assert_eq!(s.buffer().to_string(), "a   \nb\nc");
     }
@@ -965,14 +1000,32 @@ mod tests {
     #[test]
     fn copy_and_cut_without_a_selection_take_the_line() {
         let mut s = state("one\ntwo\nthree");
-        s.apply(C::PlaceCaret { at: 5, extend: false }, 0);
+        s.apply(
+            C::PlaceCaret {
+                at: 5,
+                extend: false,
+            },
+            0,
+        );
         let out = s.apply(C::Cut, 0);
         assert_eq!(out.clipboard.as_deref(), Some("two\n"));
         assert_eq!(s.buffer().to_string(), "one\nthree");
-        s.apply(C::Move { motion: Motion::DocEnd, extend: false }, 0);
+        s.apply(
+            C::Move {
+                motion: Motion::DocEnd,
+                extend: false,
+            },
+            0,
+        );
         s.apply(C::Paste("two\n".into()), 0);
         assert_eq!(s.buffer().to_string(), "one\ntwo\nthree");
-        s.apply(C::Move { motion: Motion::DocEnd, extend: false }, 0);
+        s.apply(
+            C::Move {
+                motion: Motion::DocEnd,
+                extend: false,
+            },
+            0,
+        );
         let out = s.apply(C::Cut, 0);
         assert_eq!(out.clipboard.as_deref(), Some("three\n"));
         assert_eq!(s.buffer().to_string(), "one\ntwo");
@@ -981,7 +1034,12 @@ mod tests {
     #[test]
     fn multi_caret_typing_is_one_transaction() {
         let mut s = state("a\nb\nc");
-        s.apply(C::Select { ranges: vec![1..1, 3..3, 5..5] }, 0);
+        s.apply(
+            C::Select {
+                ranges: vec![1..1, 3..3, 5..5],
+            },
+            0,
+        );
         typ(&mut s, "!", 0);
         assert_eq!(s.buffer().to_string(), "a!\nb!\nc!");
         assert_eq!(s.selections().len(), 3);
@@ -995,7 +1053,13 @@ mod tests {
     #[test]
     fn reload_keeps_the_caret_line_and_is_clean() {
         let mut s = state("aaa\nbbb\nccc");
-        s.apply(C::PlaceCaret { at: 9, extend: false }, 0);
+        s.apply(
+            C::PlaceCaret {
+                at: 9,
+                extend: false,
+            },
+            0,
+        );
         s.reload("x\ny\nzzzz\nw");
         assert_eq!(caret(&s), s.buffer().line_start(2) + 1);
         assert!(!s.is_dirty());
@@ -1010,7 +1074,10 @@ mod tests {
         s.apply(C::Insert("x".into()), 0);
         let r = s.take_records();
         assert_eq!(r.len(), 1);
-        assert_eq!((r[0].start_byte, r[0].old_end_byte, r[0].new_end_byte), (0, 0, 1));
+        assert_eq!(
+            (r[0].start_byte, r[0].old_end_byte, r[0].new_end_byte),
+            (0, 0, 1)
+        );
         s.apply(C::Undo, 0);
         assert_eq!(s.take_records()[0].old_end_byte, 1);
     }

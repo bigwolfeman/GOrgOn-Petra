@@ -98,12 +98,26 @@ impl Keymap {
             (KeyCode::PageDown, NONE, Motion::PageDown),
         ];
         for (key, mods, motion) in moves {
-            map.bind(key, mods, KeyAction::Edit(EditCommand::Move { motion, extend: false }));
+            map.bind(
+                key,
+                mods,
+                KeyAction::Edit(EditCommand::Move {
+                    motion,
+                    extend: false,
+                }),
+            );
             let extended = Mods {
                 shift: true,
                 ..mods
             };
-            map.bind(key, extended, KeyAction::Edit(EditCommand::Move { motion, extend: true }));
+            map.bind(
+                key,
+                extended,
+                KeyAction::Edit(EditCommand::Move {
+                    motion,
+                    extend: true,
+                }),
+            );
         }
         let edits = [
             (KeyCode::Backspace, NONE, EditCommand::Backspace),
@@ -165,7 +179,10 @@ mod tests {
             ctrl: true,
             ..Modifiers::NONE
         };
-        let ctrl_shift = Modifiers { shift: true, ..ctrl };
+        let ctrl_shift = Modifiers {
+            shift: true,
+            ..ctrl
+        };
         assert_eq!(
             map.lookup(KeyCode::Right, ctrl_shift),
             Some(&KeyAction::Edit(EditCommand::Move {

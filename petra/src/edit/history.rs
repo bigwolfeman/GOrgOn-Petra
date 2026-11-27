@@ -179,7 +179,11 @@ impl History {
     }
 
     /// Undo the top group on `buffer`. Returns the selections to restore.
-    pub fn undo(&mut self, buffer: &mut TextBuffer, records: &mut Vec<EditRecord>) -> Option<Selections> {
+    pub fn undo(
+        &mut self,
+        buffer: &mut TextBuffer,
+        records: &mut Vec<EditRecord>,
+    ) -> Option<Selections> {
         let group = self.undo.pop()?;
         for t in group.inverse.iter().rev() {
             t.apply(buffer, records);
@@ -192,7 +196,11 @@ impl History {
 
     /// Redo the last undone group on `buffer`. Returns the selections to
     /// restore.
-    pub fn redo(&mut self, buffer: &mut TextBuffer, records: &mut Vec<EditRecord>) -> Option<Selections> {
+    pub fn redo(
+        &mut self,
+        buffer: &mut TextBuffer,
+        records: &mut Vec<EditRecord>,
+    ) -> Option<Selections> {
         let group = self.redo.pop()?;
         for t in &group.forward {
             t.apply(buffer, records);

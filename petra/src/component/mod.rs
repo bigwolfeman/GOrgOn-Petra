@@ -321,8 +321,7 @@ pub use tabs::{
     CHROME_ICON_TAB_WIDTH, DIRTY_MARK, DOCUMENT_TAB_HEIGHT, chrome_icon_tab, chrome_icon_tab_bar,
     contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_with_secondary,
     contained_tab_xl, document_tab, document_tab_bar, document_tab_dirty, tab, tab_bar,
-    tab_with_icon, vertical_tab,
-    vertical_tab_bar,
+    tab_with_icon, vertical_tab, vertical_tab_bar,
 };
 pub use tag::{
     dismissible_tag, selectable_tag, tag, tag_lg, tag_operational, tag_sm, tag_status,
