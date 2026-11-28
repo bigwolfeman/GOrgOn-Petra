@@ -1369,9 +1369,15 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
     }
 }
 
-/// An `input`'s declared [`crate::tree::Props::cursor`] as the two paint
-/// facts it becomes: the highlighted range when something is selected, the
-/// caret bar's offset when nothing is. Both are offsets into `painted`.
+/// An `input`'s or a `text` node's declared [`crate::tree::Props::cursor`]
+/// as the two paint facts it becomes: the highlighted range when something
+/// is selected, the caret bar's offset when nothing is. Both are offsets into
+/// `painted`.
+///
+/// A `text` node carries a cursor when an application edits a document line
+/// by line and draws each line as its own text (an editor's rows, spec 006):
+/// the caret then stands at the shaped glyph edge, measured by the galley
+/// that paints the line, exactly as a field's does.
 ///
 /// `own` is `paint_content_of`'s flag: whether `painted` is the field's own
 /// `text`. A password field paints one bullet per character, so the offsets
@@ -1382,7 +1388,8 @@ fn field_cursor(
     painted: Option<&str>,
     own: bool,
 ) -> (Option<std::ops::Range<usize>>, Option<usize>) {
-    let (NodeKind::Input, Some(cursor), Some(painted)) = (node.kind, node.props.cursor, painted)
+    let (NodeKind::Input | NodeKind::Text, Some(cursor), Some(painted)) =
+        (node.kind, node.props.cursor, painted)
     else {
         return (None, None);
     };
@@ -1668,6 +1675,25 @@ mod tests {
     use crate::geom::Rect;
     use crate::token::{TokenName, TokenValue};
     use crate::tree::{Interaction, NodeKind, Role, ViewNode};
+
+    /// An editor draws each line as a `text` node and puts the caret on the
+    /// line that holds it (spec 006): the cursor becomes the same paint
+    /// facts a field's does, and a node with none paints no bar.
+    #[test]
+    fn a_text_node_carries_a_caret_like_a_field() {
+        use crate::tree::TextCursor;
+        let mut line = ViewNode::new(NodeKind::Text, "line");
+        line.props.text = Some("let x = 1;".into());
+        assert_eq!(super::paint_content_of(&line).insertion, None);
+        line.props.cursor = Some(TextCursor::at(4));
+        let content = super::paint_content_of(&line);
+        assert_eq!((content.selection, content.insertion), (None, Some(4)));
+        line.props.text = Some(String::new());
+        assert_eq!(super::paint_content_of(&line).insertion, Some(0));
+        let mut stack = ViewNode::new(NodeKind::Stack, "s");
+        stack.props.cursor = Some(TextCursor::at(1));
+        assert_eq!(super::paint_content_of(&stack).insertion, None);
+    }
 
     #[test]
     fn slots_compose_clip_z_and_opacity() {

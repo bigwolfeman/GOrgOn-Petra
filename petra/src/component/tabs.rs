@@ -592,6 +592,45 @@ pub fn document_tab(key: impl Into<Key>, label: impl Into<String>, selected: boo
     node
 }
 
+/// The diameter of a document tab's unsaved mark.
+pub const DIRTY_MARK: f32 = 8.0;
+
+/// [`document_tab`] for a document with unsaved edits (spec 006 FR-018): a
+/// filled round dot after the label, in the label's ink, as the reference
+/// editors draw it where the close mark sits. The dot is a shape, so it
+/// reads without colour; the accessible name says "unsaved" too.
+pub fn document_tab_dirty(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
+    let label = label.into();
+    let mut node = document_tab(key, label.clone(), selected);
+    let ink = if selected { TEXT_PRIMARY } else { TEXT_FAINT };
+    let dot = super::swatch(
+        "dirty",
+        DIRTY_MARK,
+        DIRTY_MARK,
+        Some(ink),
+        None,
+        Some(crate::token::corner_for(
+            crate::token::CornerRole::Pill,
+            DIRTY_MARK,
+        )),
+    );
+    if let Some(body) = node
+        .children
+        .iter_mut()
+        .find(|child| child.key.as_str() == "body")
+    {
+        let body = std::sync::Arc::make_mut(body);
+        body.props.spacing = Some(t(SPACING_03));
+        body.children.push(std::sync::Arc::new(dot));
+    }
+    node.semantics.label = Some(format!("{label}, unsaved"));
+    node
+}
+
 /// The width of a [`chrome_icon_tab`]: a 16-unit glyph with eight on each
 /// side, the reference editors' side bar view switcher pitch.
 pub const CHROME_ICON_TAB_WIDTH: f32 = 32.0;
@@ -846,6 +885,24 @@ mod tests {
     /// A document tab is the workbench's 35, joins the working surface
     /// when selected, and marks the selection with a top bar as well as the
     /// fill.
+    #[test]
+    fn a_dirty_document_tab_carries_a_round_mark_and_says_unsaved() {
+        let tab = document_tab_dirty("a", "lib.rs", true);
+        let body = tab
+            .children
+            .iter()
+            .find(|c| c.key.as_str() == "body")
+            .expect("body");
+        let dot = body
+            .children
+            .iter()
+            .find(|c| c.key.as_str() == "dirty")
+            .expect("the dot");
+        assert_eq!(dot.constraints.horizontal.min, Some(DIRTY_MARK));
+        assert_eq!(tab.semantics.label.as_deref(), Some("lib.rs, unsaved"));
+        assert_eq!(tab.constraints.vertical.max, Some(DOCUMENT_TAB_HEIGHT));
+    }
+
     #[test]
     fn a_document_tab_is_35_and_joins_the_ground_when_selected() {
         let on = document_tab("a", "field.rs", true);

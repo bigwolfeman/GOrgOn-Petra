@@ -78,6 +78,7 @@
 //! library does not cover (an arbitrary grid, a custom surface) is still
 //! composed from those primitives directly, which stay public (gate C1-10).
 
+pub mod code_editor;
 pub mod kit;
 pub mod params;
 pub mod registry;
@@ -328,10 +329,10 @@ pub use structured_list::{
     structured_list_row_static, structured_list_sized, structured_list_weights_at,
 };
 pub use tabs::{
-    CHROME_ICON_TAB_WIDTH, DOCUMENT_TAB_HEIGHT, chrome_icon_tab, chrome_icon_tab_bar,
+    CHROME_ICON_TAB_WIDTH, DIRTY_MARK, DOCUMENT_TAB_HEIGHT, chrome_icon_tab, chrome_icon_tab_bar,
     contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_with_secondary,
-    contained_tab_xl, document_tab, document_tab_bar, tab, tab_bar, tab_with_icon, vertical_tab,
-    vertical_tab_bar,
+    contained_tab_xl, document_tab, document_tab_bar, document_tab_dirty, tab, tab_bar,
+    tab_with_icon, vertical_tab, vertical_tab_bar,
 };
 pub use tag::{
     COUNT_TAG_HEIGHT, dismissible_tag, selectable_tag, tag, tag_count, tag_lg, tag_operational,
