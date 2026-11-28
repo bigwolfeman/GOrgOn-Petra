@@ -113,6 +113,7 @@ mod field;
 mod file_uploader;
 mod form;
 mod icon;
+mod inline_field;
 mod inline_loading;
 mod input_group;
 mod link;
@@ -132,6 +133,7 @@ mod pagination_nav;
 mod popover;
 mod progress;
 mod progress_indicator;
+mod quick_pick;
 mod rating;
 mod readonly;
 mod search;
@@ -239,6 +241,7 @@ pub use file_uploader::{
 };
 pub use form::{form, form_fluid, form_two_column};
 pub use icon::{BADGE_BOX, IconBox, IconMark, IconTone, icon, icon_in, icon_toned, letter_badge};
+pub use inline_field::{FieldState, INLINE_FIELD_HEIGHT, field_inline};
 pub use inline_loading::{
     inline_loading, inline_loading_error, inline_loading_finished, inline_loading_in_button,
 };
@@ -294,6 +297,9 @@ pub use popover::{
 pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{
     progress_indicator, progress_indicator_interactive, progress_step, progress_step_interactive,
+};
+pub use quick_pick::{
+    QUICK_PICK_FIELD_HEIGHT, QUICK_PICK_ROW_HEIGHT, QUICK_PICK_WIDTH, QuickPickItem, quick_pick,
 };
 pub use rating::rating;
 pub use readonly::readonly;
