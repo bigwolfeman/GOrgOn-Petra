@@ -228,8 +228,9 @@ fn a_raw_claim_gets_the_bound_chord_and_the_reserved_chord_escapes_it() {
 #[test]
 fn a_reserved_chord_outside_a_raw_claim_leaves_focus_in_place() {
     let (ctx, mut host) = boot(ShellApp::default());
-    step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
-    step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+    // Shift+Tab wraps to the last control. Tab cannot walk there: the raw
+    // claimant between keeps Tab as its own key (spec 006 FR-013).
+    step(&ctx, &mut host, key_press(Key::Tab, Modifiers::SHIFT));
     assert_eq!(host.state().focused.as_deref(), Some("/root/notes"));
 
     let handled_before = host.app().handled.len();
