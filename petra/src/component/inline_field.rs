@@ -37,8 +37,8 @@
 use super::field::{invalid_helper, warning_helper};
 use super::stack;
 use super::tokens::{
-    ACCENT_PRIMARY, SPACING_02, SPACING_03, SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_BASE,
-    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
+    ACCENT_PRIMARY, SHADOW_OVERLAY, SPACING_02, SPACING_03, SUPPORT_ERROR, SUPPORT_WARNING,
+    SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::geom::{Align as CrossAlign, Axis};
 use crate::tree::{
@@ -197,7 +197,12 @@ fn message(state: &FieldState) -> Option<ViewNode> {
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(edge));
+    // A floating message is a container, so it takes no box border
+    // (spec 009 SC-7): the state's colour is a rail on its leading edge,
+    // as Carbon's inline notification draws it, and the glyph and the word
+    // carry the state without the colour.
+    node.props.tokens.insert("border-left".into(), t(edge));
+    node.props.tokens.insert("shadow".into(), t(SHADOW_OVERLAY));
     node.semantics = Semantics {
         role: Some(Role::Status),
         label: Some(words),
@@ -286,6 +291,15 @@ mod tests {
                 "anchored under the well"
             );
             assert_eq!(message.props.input_policy, Some(InputPolicy::Passthrough));
+            assert_eq!(
+                message.props.tokens.get("border-left").map(|t| t.as_str()),
+                Some(edge),
+                "the state's rail on the leading edge"
+            );
+            assert!(
+                !message.props.tokens.contains_key("border"),
+                "a container takes no box border"
+            );
             assert!(find(message, "mark").is_some(), "the state's glyph");
             assert!(
                 texts(message).iter().any(|t| t == word),
