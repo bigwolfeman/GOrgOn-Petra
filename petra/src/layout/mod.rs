@@ -1310,6 +1310,7 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
                         len: run.len,
                         foreground: run.foreground.as_ref().map(|n| n.as_str().to_owned()),
                         underline: run.underline,
+                        strike: run.strike,
                         background: run.background.as_ref().map(|n| n.as_str().to_owned()),
                         weight: run.weight,
                         italic: run.italic,

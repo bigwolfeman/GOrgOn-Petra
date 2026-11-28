@@ -53,8 +53,8 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_04,
-    SURFACE_RAISED, TEXT_PRIMARY, t,
+    BORDER_STRONG, LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_02,
+    SPACING_03, SPACING_04, SURFACE_RAISED, TEXT_PRIMARY, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, StatusToken, corner_for};
@@ -69,6 +69,8 @@ const HEIGHT_SM: f32 = 18.0;
 const HEIGHT_MD: f32 = 24.0;
 /// Carbon lg tag height (`2rem`).
 const HEIGHT_LG: f32 = 32.0;
+/// A count tag's height: one label line, as an editor's result badge.
+pub const COUNT_TAG_HEIGHT: f32 = 16.0;
 /// Carbon `min-inline-size` on every tag.
 const MIN_INLINE: f32 = 32.0;
 /// Carbon `max-inline-size` before the title truncates.
@@ -95,6 +97,23 @@ pub fn tag_sm(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// Carbon lg (32).
 pub fn tag_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     read_only_tag(key, label, HEIGHT_LG, SPACING_04)
+}
+
+/// A count, as an editor's badge: `count` in the label type on a pill one
+/// layer step off its row, as wide as the digits and never narrower than
+/// tall, on the darkest layer step so it stays apart from a selected
+/// row's band. Not interactive. The number reads as a count, apart from the
+/// words beside it, by its band and shape, not by a hue.
+pub fn tag_count(key: impl Into<Key>, count: usize) -> ViewNode {
+    let mut label = title_text("label", count.to_string());
+    label.props.style = Some(t(TYPOGRAPHY_LABEL));
+    let mut node = shell(key, COUNT_TAG_HEIGHT, SPACING_02, vec![label], false, false);
+    node.props
+        .tokens
+        .insert("background".into(), t(LAYER_ACTIVE));
+    node.props.justify = Some(crate::tree::Justify::Center);
+    node.constraints.horizontal.min = Some(COUNT_TAG_HEIGHT);
+    node
 }
 
 /// Dismissible tag. The whole pill is `"Dismiss {label}"` (FR-058); that
@@ -748,5 +767,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_count_tag_is_a_short_pill_as_wide_as_its_digits() {
+        let one = super::tag_count("n", 3);
+        assert_eq!(one.constraints.vertical.max, Some(super::COUNT_TAG_HEIGHT));
+        assert_eq!(
+            one.constraints.horizontal.min,
+            Some(super::COUNT_TAG_HEIGHT)
+        );
+        assert!(one.semantics.role.is_none(), "a count is not a control");
+        let label = &one.children[0];
+        assert_eq!(label.props.text.as_deref(), Some("3"));
     }
 }

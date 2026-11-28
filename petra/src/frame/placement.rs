@@ -369,6 +369,8 @@ pub struct TextRunPaint {
     pub foreground: Option<String>,
     /// [`crate::tree::TextRun::underline`].
     pub underline: bool,
+    /// [`crate::tree::TextRun::strike`].
+    pub strike: bool,
     /// Band token for this run ([`crate::tree::TextRun::background`]).
     pub background: Option<String>,
     /// [`crate::tree::TextRun::weight`]. A shaping input, so the painter

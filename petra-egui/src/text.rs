@@ -503,7 +503,7 @@ struct GalleyKey {
     /// exactly the key they landed on before this field existed. A coloured
     /// run gets its own entry: two inks over one string are two pictures and
     /// must not share a galley.
-    runs: Vec<(usize, Option<u32>, bool, Option<u32>)>,
+    runs: Vec<InkKey>,
     /// Face runs over the text, from [`TextRequest::runs`], or empty when
     /// every run is in the node's own face. A shaping input: the same string
     /// with a `strong` or an italic stretch has other advances, so it is its
@@ -511,6 +511,10 @@ struct GalleyKey {
     /// the request.
     faces: Vec<(usize, RunFace)>,
 }
+
+/// One [`InkRun`] as a galley key part: byte length, ink bits, underline,
+/// strike, and band bits.
+type InkKey = (usize, Option<u32>, bool, bool, Option<u32>);
 
 /// One painted run of a text: its byte length, its ink (`None` for the
 /// painter's fallback), and whether it is underlined
@@ -523,6 +527,8 @@ pub struct InkRun {
     pub color: Option<Color32>,
     /// Underlined.
     pub underline: bool,
+    /// Struck through.
+    pub strike: bool,
     /// The band behind the run, or `None`.
     pub background: Option<Color32>,
 }
@@ -535,6 +541,7 @@ impl InkRun {
             len,
             color,
             underline: false,
+            strike: false,
             background: None,
         }
     }
@@ -809,6 +816,7 @@ impl GalleyShaper {
                         run.len,
                         run.color.map(|c| u32::from_le_bytes(c.to_array())),
                         run.underline,
+                        run.strike,
                         run.background.map(|c| u32::from_le_bytes(c.to_array())),
                     )
                 })
@@ -836,6 +844,7 @@ impl GalleyShaper {
         let format = |face: RunFace,
                       color: Color32,
                       underline: bool,
+                      strike: bool,
                       background: Option<Color32>| TextFormat {
             font_id: style.font_at(face),
             color,
@@ -853,12 +862,19 @@ impl GalleyShaper {
             } else {
                 egui::Stroke::NONE
             },
+            // One unit through the middle, in the run's ink: a strike
+            // moves no glyph either.
+            strikethrough: if strike {
+                egui::Stroke::new(1.0, color)
+            } else {
+                egui::Stroke::NONE
+            },
             ..TextFormat::default()
         };
         let mut job = if runs.is_empty() && faces.is_empty() {
             LayoutJob::single_section(
                 req.text.to_owned(),
-                format(RunFace::default(), Color32::PLACEHOLDER, false, None),
+                format(RunFace::default(), Color32::PLACEHOLDER, false, false, None),
             )
         } else {
             let mut job = LayoutJob {
@@ -880,11 +896,12 @@ impl GalleyShaper {
             for (range, face, ink) in sections(req.text.len(), &faces, runs) {
                 let leading_space = if face.code == was_code { 0.0 } else { clear };
                 was_code = face.code;
-                let (color, underline, background) =
-                    ink.map_or((Color32::PLACEHOLDER, false, None), |run| {
+                let (color, underline, strike, background) =
+                    ink.map_or((Color32::PLACEHOLDER, false, false, None), |run| {
                         (
                             run.color.unwrap_or(Color32::PLACEHOLDER),
                             run.underline,
+                            run.strike,
                             run.background,
                         )
                     });
@@ -892,7 +909,7 @@ impl GalleyShaper {
                     leading_space,
                     byte_range: egui::text::ByteIndex(range.start)
                         ..egui::text::ByteIndex(range.end),
-                    format: format(face, color, underline, background),
+                    format: format(face, color, underline, strike, background),
                 });
             }
             job
@@ -1219,6 +1236,7 @@ pub fn runs_with_selection(
                     Some(last)
                         if last.color == colour
                             && last.underline == run.underline
+                            && last.strike == run.strike
                             && last.background == run.background =>
                     {
                         last.len += to - from;
@@ -1227,6 +1245,7 @@ pub fn runs_with_selection(
                         len: to - from,
                         color: colour,
                         underline: run.underline,
+                        strike: run.strike,
                         background: run.background,
                     }),
                 }
@@ -2479,6 +2498,7 @@ mod tests {
                 len: r.len,
                 foreground: None,
                 underline: false,
+                strike: false,
                 background: None,
                 weight: r.weight,
                 italic: r.italic,
@@ -2557,6 +2577,7 @@ mod tests {
                 len: r.len,
                 foreground: None,
                 underline: false,
+                strike: false,
                 background: None,
                 weight: r.weight,
                 italic: r.italic,
@@ -2642,6 +2663,7 @@ mod tests {
                 len: r.len,
                 foreground: None,
                 underline: false,
+                strike: false,
                 background: None,
                 weight: r.weight,
                 italic: r.italic,

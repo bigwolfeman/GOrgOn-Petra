@@ -85,6 +85,7 @@ pub(super) fn paint_text(
                     len: run.len,
                     color: ink,
                     underline: run.underline,
+                    strike: run.strike,
                     // An inline-code run's band is its chip, drawn below
                     // around the letters; egui's band is the full line.
                     background: if run.code {

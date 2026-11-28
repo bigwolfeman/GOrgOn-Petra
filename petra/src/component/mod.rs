@@ -127,6 +127,7 @@ mod menubar;
 mod modal;
 mod notification;
 mod number_input;
+mod option_toggle;
 mod otp;
 mod pagination;
 mod pagination_nav;
@@ -280,6 +281,9 @@ pub use number_input::{
     number_input, number_input_invalid, number_input_lg, number_input_nosteppers,
     number_input_readonly, number_input_sm, number_input_warning,
 };
+pub use option_toggle::{
+    FieldOption, OPTION_FIELD_HEIGHT, OPTION_TOGGLE_SIZE, field_with_options, option_toggle,
+};
 pub use otp::otp;
 pub use pagination::{
     PaginationPicker, pagination, pagination_items, pagination_items_lg, pagination_items_open,
@@ -330,8 +334,8 @@ pub use tabs::{
     vertical_tab_bar,
 };
 pub use tag::{
-    dismissible_tag, selectable_tag, tag, tag_lg, tag_operational, tag_sm, tag_status,
-    tag_with_avatar,
+    COUNT_TAG_HEIGHT, dismissible_tag, selectable_tag, tag, tag_count, tag_lg, tag_operational,
+    tag_sm, tag_status, tag_with_avatar,
 };
 pub use text::{heading, text, text_xs};
 pub use textarea::{

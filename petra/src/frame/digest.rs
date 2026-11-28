@@ -389,6 +389,13 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
                     w.bool(run.underline);
                 }
             }
+            // A strike is a picture change on the same terms.
+            if runs.iter().any(|run| run.strike) {
+                w.text("strike");
+                for run in runs {
+                    w.bool(run.strike);
+                }
+            }
             // A band behind a run and a run's weight are picture changes the
             // same way, written on the same terms: only for a list that has
             // one, after everything before them, so every frame without a
@@ -1554,6 +1561,7 @@ mod tests {
         };
         let run = |len: usize, fg: Option<&str>| TextRunPaint {
             underline: false,
+            strike: false,
             background: None,
             len,
             foreground: fg.map(ToOwned::to_owned),
@@ -1570,6 +1578,7 @@ mod tests {
         let underlined = with(vec![
             TextRunPaint {
                 underline: true,
+                strike: false,
                 background: None,
                 ..run(3, Some("accent.primary"))
             },
@@ -1609,6 +1618,7 @@ mod tests {
             len,
             foreground: None,
             underline: false,
+            strike: false,
             background: None,
             weight: None,
             italic: false,
@@ -1639,6 +1649,14 @@ mod tests {
         assert_ne!(plain, strong, "a strong stretch is a different picture");
         assert_ne!(strong, bold, "two weights are two pictures");
         assert_ne!(plain, banded, "a band is a different picture");
+        let struck = with(vec![
+            TextRunPaint {
+                strike: true,
+                ..run(3)
+            },
+            run(3),
+        ]);
+        assert_ne!(plain, struck, "a strike is a different picture");
     }
 
     /// An italic run moves the paint hash. A list where no run is italic
@@ -1659,6 +1677,7 @@ mod tests {
             len,
             foreground: None,
             underline: false,
+            strike: false,
             background: None,
             weight: None,
             italic,
@@ -1686,6 +1705,7 @@ mod tests {
             len,
             foreground: None,
             underline: false,
+            strike: false,
             background: None,
             weight: None,
             italic: false,

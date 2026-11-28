@@ -148,6 +148,17 @@ impl ParamShape for ProgressStepParams {
         "{ key: string, label: string, complete: boolean, current: boolean }";
 }
 
+/// `tag_count(key, count)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TagCountParams {
+    key: Key,
+    count: usize,
+}
+impl ParamShape for TagCountParams {
+    const LUAU: &'static str = "{ key: string, count: number }";
+}
+
 /// `tag_with_avatar(key, label, avatar)`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -322,6 +333,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("tag_sm", KeyLabel, |p| lib::tag_sm(p.key, p.label)),
     row!("tag_lg", KeyLabel, |p| lib::tag_lg(p.key, p.label)),
+    row!("tag_count", TagCountParams, |p| lib::tag_count(
+        p.key, p.count
+    )),
     row!("dismissible_tag", KeyLabel, |p| lib::dismissible_tag(
         p.key, p.label
     )),

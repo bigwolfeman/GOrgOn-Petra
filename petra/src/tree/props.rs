@@ -114,6 +114,12 @@ pub struct TextRun {
     /// Defaulted and skipped when false, so older trees parse unchanged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,
+    /// Strike this run through: text shown as going away, such as a
+    /// replace preview's old match beside its replacement. A shape, so the
+    /// pair reads apart without a hue. Paint only: a strike moves no glyph.
+    /// Defaulted and skipped when false, so older trees parse unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strike: bool,
     /// Set this stretch as inline code: Markdown's `` `code` ``, HTML's
     /// `<code>`. Three things change, all derived from the node's own style
     /// so a text zoom scales them with the words around them:
