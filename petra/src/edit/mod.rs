@@ -19,7 +19,7 @@
 //! ```
 //!
 //! The decision record is
-//! `.agents/notes/proposed/feature/2026-11-27-vs-code-editor-not-a-modal-port.md`
+//! `.agents/notes/implemented/feature/2026-11-27-vs-code-editor-not-a-modal-port.md`
 //! in the GOrgOn repository; the plan is `specs/006-editor/plan.md` there.
 
 pub mod buffer;
