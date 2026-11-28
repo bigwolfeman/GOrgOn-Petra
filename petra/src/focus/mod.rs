@@ -790,6 +790,7 @@ fn content_run(placements: &[Placement], shown: usize) -> Option<(f32, f32)> {
             || p.rect.w <= 0.0
             || !p.is_visible()
             || !descends_from(placements, i, shown)
+            || floats_below(placements, i, shown)
         {
             continue;
         }
@@ -800,6 +801,28 @@ fn content_run(placements: &[Placement], shown: usize) -> Option<(f32, f32)> {
         });
     }
     span
+}
+
+/// Whether `index` sits inside a `surface` that is itself inside
+/// `ancestor`: a popup a control declared (a field's message, a menu), which
+/// floats wherever its anchor put it and is no part of the control's run.
+/// Counting it once stretched a row's focus bar across half the window.
+fn floats_below(placements: &[Placement], index: usize, ancestor: usize) -> bool {
+    let mut cursor = Some(index);
+    for _ in 0..placements.len() {
+        match cursor {
+            Some(i) if i == ancestor => return false,
+            Some(i) => {
+                let p = &placements[i];
+                if p.kind == NodeKind::Surface {
+                    return true;
+                }
+                cursor = p.parent;
+            }
+            None => return false,
+        }
+    }
+    false
 }
 
 /// Whether `index` is inside `ancestor`'s subtree.

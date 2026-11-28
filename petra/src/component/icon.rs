@@ -44,6 +44,7 @@
 
 use std::sync::Arc;
 
+mod actions;
 mod files;
 mod fills;
 mod letter;
@@ -646,6 +647,23 @@ pub enum IconMark {
     DiamondFilled,
     /// A filled disc with a bar under it. Petra's own.
     DiscOnBar,
+    /// Carbon `document--add`: [`IconMark::Document`]'s sheet without its
+    /// text lines, a `+` badge at its lower right (a new file).
+    DocumentAdd,
+    /// Carbon `folder--add`: [`IconMark::Folder`] with a `+` badge at its
+    /// lower right (a new folder).
+    FolderAdd,
+    /// Carbon `folder--move-to`: a folder holding a right-pointing arrow
+    /// (move into another folder).
+    FolderMoveTo,
+    /// Carbon `trash-can`: handle, lid, body and two slats.
+    TrashCan,
+    /// Carbon `undo`: a left-pointing head on a stem that turns back down a
+    /// half circle.
+    Undo,
+    /// Carbon `collapse-all`: a box with two receding corner brackets behind
+    /// it.
+    CollapseAll,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -917,6 +935,12 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::CircleExclamation => signs::circle_exclamation(size / 32.0, color),
         IconMark::DiamondFilled => signs::diamond_filled(size / 32.0, color),
         IconMark::DiscOnBar => signs::disc_on_bar(size / 32.0, color),
+        IconMark::DocumentAdd => actions::document_add(size / 32.0, color),
+        IconMark::FolderAdd => actions::folder_add(size / 32.0, color),
+        IconMark::FolderMoveTo => actions::folder_move_to(size / 32.0, color),
+        IconMark::TrashCan => actions::trash_can(size / 32.0, color),
+        IconMark::Undo => actions::undo(size / 32.0, color),
+        IconMark::CollapseAll => actions::collapse_all(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -1890,7 +1914,7 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 77] = [
+    const EVERY_MARK: [IconMark; 83] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CaretDown,
@@ -1968,6 +1992,12 @@ mod tests {
         IconMark::CircleExclamation,
         IconMark::DiamondFilled,
         IconMark::DiscOnBar,
+        IconMark::DocumentAdd,
+        IconMark::FolderAdd,
+        IconMark::FolderMoveTo,
+        IconMark::TrashCan,
+        IconMark::Undo,
+        IconMark::CollapseAll,
     ];
 
     fn list(node: &crate::tree::ViewNode) -> &DrawList {

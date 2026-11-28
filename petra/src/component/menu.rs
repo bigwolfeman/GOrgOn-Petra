@@ -31,6 +31,9 @@
 //! * `menu-item-group` / `menu-item-radio-group` — [`menu_item_group`] /
 //!   [`menu_item_radio_group`], the two structural sub-parts, and the only
 //!   rows a menu does not re-pin itself (see [`menu_at`]).
+//! * `menu-item-divider` — [`menu_item_divider`], the 1px `$border-subtle`
+//!   rule with `$spacing-02` above and below that splits a menu's rows into
+//!   groups. Not a row either, so the menu leaves its height alone.
 //!
 //! ## Submenu (manifest row 257)
 //!
@@ -59,7 +62,9 @@ use super::list_box::{Dividers, ListBoxSize, list_box};
 use super::pin_block;
 use super::stack;
 use super::text::text;
-use super::tokens::{BORDER_SUBTLE, SPACING_02, SPACING_05, TEXT_MUTED, TYPOGRAPHY_LABEL, t};
+use super::tokens::{
+    BORDER_SUBTLE, SPACING_02, SPACING_05, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_LABEL, t,
+};
 use crate::geom::Align as CrossAlign;
 use crate::geom::Axis;
 use crate::tree::{
@@ -78,6 +83,11 @@ pub(crate) const RADIO_GROUP_ROLE: &str = "radiogroup";
 /// carries here); it exists so the enclosing menu re-pins the row inside it
 /// and leaves the nested surface alone.
 pub(crate) const SUBMENU_ROLE: &str = "submenu";
+/// The role a [`menu_item_divider`] declares: ARIA's own `separator`. Like
+/// the groups, it is not a row, so [`re_pin`] leaves its height alone.
+pub(crate) const DIVIDER_ROLE: &str = "separator";
+/// A [`menu_item_divider`]'s line: Carbon's `block-size: 1px`.
+const DIVIDER_THICKNESS: f32 = 1.0;
 /// The key of the row inside a [`menu_submenu`], the one its flyout anchors
 /// to.
 const SUBMENU_ROW: &str = "row";
@@ -246,8 +256,50 @@ fn re_pin(node: &mut ViewNode, height: f32) {
                 }
             }
         }
+        Some(Role::Custom(ref name)) if name == DIVIDER_ROLE => {}
         _ => node.constraints = pin_block(height),
     }
+}
+
+/// `menu-item-divider`: Carbon's `.cds--menu-item-divider`, the rule that
+/// splits a menu into groups of related rows. A 1px [`BORDER_SUBTLE`] line
+/// across the menu's whole width with [`SPACING_02`] above and below
+/// (`block-size: 1px; margin: $spacing-02 0`). It declares ARIA's
+/// `separator` role ([`DIVIDER_ROLE`]): a driver reads it as a boundary and
+/// skips it, and the menu does not pin it to the row height.
+pub fn menu_item_divider(key: impl Into<Key>) -> ViewNode {
+    // The line is a childless strip one unit tall, not a `Separator`: a
+    // separator answers the whole offer along its axis, so inside a menu
+    // that fits its content it pushed the menu out to its 288 maximum. A
+    // childless strip has no width of its own; the `Stretch` below gives
+    // it the menu's.
+    let mut line = stack("rule", Axis::Vertical, None, Vec::new());
+    line.constraints.vertical = AxisConstraint {
+        min: Some(DIVIDER_THICKNESS),
+        max: Some(DIVIDER_THICKNESS),
+        priority: 0,
+    };
+    line.props
+        .tokens
+        .insert("background".into(), t(BORDER_SUBTLE));
+    let mut node = stack(key, Axis::Vertical, None, vec![line]);
+    node.props.align = Some(CrossAlign::Stretch);
+    node.props.padding = Some(InsetRefs {
+        top: Some(t(SPACING_02)),
+        bottom: Some(t(SPACING_02)),
+        ..InsetRefs::default()
+    });
+    // The strip wears the menu's own fill. The overlay's fill does not reach
+    // between rows (each row paints its own), so a bare strip showed the
+    // window behind it as a dark band around the line.
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node.semantics = Semantics {
+        role: Some(Role::Custom(DIVIDER_ROLE.to_owned())),
+        ..Semantics::default()
+    };
+    node
 }
 
 /// `menu-border`: [`menu`] wearing the 1px `$border-subtle` outline the

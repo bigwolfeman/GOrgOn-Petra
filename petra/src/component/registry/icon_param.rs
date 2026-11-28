@@ -182,6 +182,18 @@ pub enum IconMarkParam {
     DiamondFilled,
     /// `"disc-on-bar"` on the wire, [`IconMark::DiscOnBar`] in the tree.
     DiscOnBar,
+    /// `"document-add"` on the wire, [`IconMark::DocumentAdd`] in the tree.
+    DocumentAdd,
+    /// `"folder-add"` on the wire, [`IconMark::FolderAdd`] in the tree.
+    FolderAdd,
+    /// `"folder-move-to"` on the wire, [`IconMark::FolderMoveTo`] in the tree.
+    FolderMoveTo,
+    /// `"trash-can"` on the wire, [`IconMark::TrashCan`] in the tree.
+    TrashCan,
+    /// `"undo"` on the wire, [`IconMark::Undo`] in the tree.
+    Undo,
+    /// `"collapse-all"` on the wire, [`IconMark::CollapseAll`] in the tree.
+    CollapseAll,
 }
 
 impl From<IconMarkParam> for IconMark {
@@ -264,6 +276,12 @@ impl From<IconMarkParam> for IconMark {
             IconMarkParam::CircleExclamation => IconMark::CircleExclamation,
             IconMarkParam::DiamondFilled => IconMark::DiamondFilled,
             IconMarkParam::DiscOnBar => IconMark::DiscOnBar,
+            IconMarkParam::DocumentAdd => IconMark::DocumentAdd,
+            IconMarkParam::FolderAdd => IconMark::FolderAdd,
+            IconMarkParam::FolderMoveTo => IconMark::FolderMoveTo,
+            IconMarkParam::TrashCan => IconMark::TrashCan,
+            IconMarkParam::Undo => IconMark::Undo,
+            IconMarkParam::CollapseAll => IconMark::CollapseAll,
         }
     }
 }
@@ -293,6 +311,8 @@ macro_rules! icon_mark_luau {
          \"square-plus-dashed\" | \"square-in-square\" | \"arrow-up\" | \"arrow-down\" | \"arrow-question\" | \"arrow-cross\" | \"arrow-dashed\" | \
          \"arrows-loop\" | \"square-ellipsis\" | \"sieve\" | \"hourglass\" | \
          \"octagon-cross\" | \"octagon-bar\" | \"folder-cracked\" | \"folder-person\" | \
-         \"cloud\" | \"circle-exclamation\" | \"diamond-filled\" | \"disc-on-bar\""
+         \"cloud\" | \"circle-exclamation\" | \"diamond-filled\" | \"disc-on-bar\" | \
+         \"document-add\" | \"folder-add\" | \"folder-move-to\" | \"trash-can\" | \"undo\" | \
+         \"collapse-all\""
     };
 }

@@ -167,6 +167,7 @@ pub fn place(
     // never render outside of — never the cell its flow parent offered.
     let viewport = slot.window;
 
+    settle_sibling_in_rows(surface.anchor, path, ctx, &*sink);
     let mut plan = anchor_placement(surface.anchor, path, viewport, natural, ctx);
     // `Fit::Anchor`: a list box is as broad as the field that opened it
     // (`contracts/anchored-placement.md` §4, "Fit"). The anchor's rect is
@@ -561,6 +562,55 @@ pub fn resolve_anchor_kind(
                 AnchorResolution::NodeUnharvested
             }
         }
+    }
+}
+
+/// Give an [`Anchor::Sibling`] the harvest could not see the rect this walk
+/// already placed for it.
+///
+/// The harvest finds anchor targets by walking the declared tree
+/// ([`crate::layout`]'s `anchor_targets`), and a `collection`'s rows are not
+/// in that tree: its [`crate::layout::RowSource`] makes them during
+/// placement. A surface declared inside a row (a field's message, a cell's
+/// menu) therefore had no harvested rect and centred in the window. Its
+/// sibling, though, comes before it in the same child list, so the real walk
+/// has placed it by the time the surface is reached, and its rect is final.
+/// Reading it back is the same answer the harvest would have given, on
+/// every run, which is what `contracts/anchored-placement.md` §1 asks the
+/// harvest for. Only a preceding sibling is read: a later one is not placed
+/// yet, and reaching for it is the order dependence the harvest exists to
+/// rule out. A harvest walk itself reads nothing back.
+fn settle_sibling_in_rows(
+    anchor: &Anchor,
+    path: &KeyPath,
+    ctx: &mut LayoutCtx<'_>,
+    sink: &dyn PlacementSink,
+) {
+    if !matches!(anchor, Anchor::Sibling { .. }) || ctx.anchors.harvest.is_some() {
+        return;
+    }
+    let Some(id) = anchor.target_id(path) else {
+        return;
+    };
+    if ctx.anchors.get(&id).is_some() {
+        return;
+    }
+    // The nearest ancestor first: the surface's own parent.
+    let parent = KeyPath::ancestor_ids(&path.id()).into_iter().next();
+    if let Some(placed) = sink
+        .placed()
+        .iter()
+        .rev()
+        .take_while(|p| Some(&p.id) != parent.as_ref())
+        .find(|p| p.id == id)
+    {
+        ctx.anchors.rects.insert(
+            id,
+            crate::layout::AnchorRect {
+                rect: placed.rect,
+                clip: placed.clip,
+            },
+        );
     }
 }
 

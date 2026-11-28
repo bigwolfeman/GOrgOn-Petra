@@ -30,7 +30,8 @@ use crate::component::{
     content_switcher_low_contrast_lg, content_switcher_low_contrast_sm, content_switcher_sm,
     document_tab, document_tab_bar, document_tab_dirty, link, link_inline, link_with_icon, menu,
     menu_border, menu_button, menu_button_ghost, menu_button_lg, menu_button_sm,
-    menu_button_tertiary, menu_button_xs, menu_flyout, menu_item, menu_item_group,
+    menu_button_tertiary, menu_button_xs, menu_flyout, menu_item, menu_item_divider,
+    menu_item_group,
     menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu,
     menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg,
     overflow_menu_sm, overflow_menu_xs, pagination, pagination_items, pagination_items_lg,
@@ -658,6 +659,7 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_item_selectable", MenuItemSelectableParams, |p| {
         menu_item_selectable(p.key, p.label, p.icon.map(Into::into), p.selected)
     }),
+    row!("menu_item_divider", KeyOnly, |p| menu_item_divider(p.key)),
     row!("menu_item_group", KeyLabelChildren, |p| menu_item_group(
         p.key, p.label, p.children
     )),
@@ -1150,6 +1152,7 @@ mod tests {
             "menu_item_selectable" => json!({
                 "key": "k-mi-sel", "label": "l", "icon": "copy", "selected": true
             }),
+            "menu_item_divider" => json!({ "key": "k-mi-div" }),
             "menu_item_group" => {
                 json!({ "key": "k-mi-group", "label": "l", "children": [] })
             }

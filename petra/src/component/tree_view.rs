@@ -231,6 +231,8 @@ pub struct TreeItem {
     dimmed: Option<String>,
     state: Option<String>,
     place: Option<TreePlace>,
+    editor: Option<ViewNode>,
+    slot_mark: Option<ViewNode>,
 }
 
 impl TreeItem {
@@ -251,6 +253,8 @@ impl TreeItem {
             dimmed: None,
             state: None,
             place: None,
+            editor: None,
+            slot_mark: None,
         }
     }
 
@@ -358,6 +362,35 @@ impl TreeItem {
         self
     }
 
+    /// Edit the row in place: `field` stands where the label stood and takes
+    /// the rest of the row, as a workbench explorer turns a row into a field
+    /// to rename it ([`super::field_inline`] is the field it means). The
+    /// caret, the icon and the row's place keep theirs, so the name being
+    /// typed starts in the column the name it replaces started in. The
+    /// detail and the mark give way while the row edits: the field needs
+    /// the width, and a decoration on a name that is being changed describes
+    /// a name that may not survive.
+    ///
+    /// The row keeps its key, its role and its semantic label, so focus and
+    /// a reader stay on the same row while it edits.
+    #[must_use]
+    pub fn editing(mut self, field: ViewNode) -> Self {
+        self.editor = Some(field);
+        self
+    }
+
+    /// A mark in a leaf's caret slot: a glyph that says what kind of leaf
+    /// the row is without moving its label off the column every other
+    /// label starts in. A tree whose rows carry no icons uses it for the
+    /// one row that needs to say its kind, such as a field row for a file
+    /// that does not exist yet. A branch draws its caret there and ignores
+    /// this.
+    #[must_use]
+    pub fn slot_mark(mut self, mark: ViewNode) -> Self {
+        self.slot_mark = Some(mark);
+        self
+    }
+
     /// Place this row in a flattened hierarchy: indent it to `level`, and
     /// declare `level`, `pos_in_set`, and `set_size` in its semantics.
     ///
@@ -388,7 +421,15 @@ impl TreeItem {
             dimmed,
             state,
             place,
+            editor,
+            slot_mark,
         } = self;
+        let editing = editor.is_some();
+        let (detail, mark) = if editing {
+            (None, None)
+        } else {
+            (detail, mark)
+        };
 
         // The bar keeps its width in every state; only its fill comes and
         // goes, so the label never shifts when the selection moves.
@@ -404,6 +445,19 @@ impl TreeItem {
             } else {
                 caret("caret", direction)
             }
+        } else if let Some(mut mark) = slot_mark {
+            // The mark takes the caret's box, centred in it, so the label
+            // column does not move.
+            mark.key = Key::new("caret-slot");
+            let mut slot = stack("caret-box", Axis::Horizontal, None, vec![mark]);
+            slot.props.align = Some(Align::Center);
+            slot.props.justify = Some(crate::tree::Justify::Center);
+            slot.constraints.horizontal = AxisConstraint {
+                min: Some(CARET_SIZE),
+                max: Some(CARET_SIZE),
+                priority: 0,
+            };
+            slot
         } else {
             swatch("caret-slot", CARET_SIZE, CARET_SIZE, None, None, None)
         };
@@ -461,7 +515,12 @@ impl TreeItem {
             // the label (it ellipsizes); the mark never does.
             label_node.constraints.horizontal.priority = 1;
         }
-        parts.push(label_node);
+        match editor {
+            // The field is the row's content run, so the focus bar the row
+            // shows sits under the field and not under the empty lead.
+            Some(field) => parts.push(field.with_focus_run()),
+            None => parts.push(label_node),
+        }
         if let Some(detail) = detail {
             let mut words = super::text::text("words", detail);
             words.props.wrap = Some(TextWrap::Ellipsis);
@@ -1189,6 +1248,88 @@ mod tests {
     /// The workbench density: 22-unit rows, 8 per level, a thin chevron in
     /// the caret box, no accent bar, the mark at the row's trailing edge,
     /// and the chrome set's row states.
+    /// A row being edited puts the field where the label started and runs
+    /// it to the row's end. The mark gives way, the key and the role stay,
+    /// and the message the field shows floats under it without growing the
+    /// row.
+    #[test]
+    fn an_editing_row_puts_its_field_in_the_label_column() {
+        use crate::component::{FieldState, INLINE_FIELD_HEIGHT, field_inline};
+        use crate::tree::TextCursor;
+        let place = TreePlace {
+            level: 2,
+            pos_in_set: 1,
+            set_size: 2,
+        };
+        let plain = TreeItem::new("a", "notes.md")
+            .compact()
+            .at(place)
+            .mark(super::super::text::text("m", "M"))
+            .build(Vec::new());
+        let field = field_inline(
+            "name",
+            "notes.md",
+            "notes.md",
+            TextCursor::spanning(0..5),
+            &FieldState::Invalid("`notes.md` already exists".into()),
+        );
+        let editing = TreeItem::new("b", "notes.md")
+            .compact()
+            .slot_mark(crate::component::icon_toned(
+                "glyph",
+                crate::component::IconMark::Document,
+                crate::component::IconTone::Secondary,
+            ))
+            .at(TreePlace {
+                pos_in_set: 2,
+                ..place
+            })
+            .mark(super::super::text::text("m", "M"))
+            .editing(field)
+            .build(Vec::new());
+        assert_eq!(editing.semantics.role, Some(Role::TreeItem));
+        let parts: Vec<&str> = named(&editing, "row")
+            .children
+            .iter()
+            .map(|c| c.key.as_str())
+            .collect();
+        assert!(
+            parts.contains(&"name"),
+            "the field is a part of the row: {parts:?}"
+        );
+        assert!(
+            !parts.contains(&"label"),
+            "the field replaces the label: {parts:?}"
+        );
+        assert!(!parts.contains(&"mark"), "the mark gives way: {parts:?}");
+        let frame = petrify_lone(tree_view("fs", vec![plain, editing]));
+        let tree = rect_of(&frame, "/fs");
+        let label = rect_of(&frame, "/a/row/label");
+        let well = rect_of(&frame, "/b/row/name/body/input");
+        assert_eq!(well.x, label.x, "the field starts in the label column");
+        let glyph = rect_of(&frame, "/b/row/caret-box/caret-slot");
+        let slot = rect_of(&frame, "/b/row/caret-box");
+        assert_eq!(slot.w, CARET_SIZE, "the slot mark keeps the caret's box");
+        assert!(glyph.x >= slot.x && glyph.x + glyph.w <= slot.x + slot.w + 0.01);
+        assert_eq!(well.h, INLINE_FIELD_HEIGHT);
+        assert!(
+            tree.x + tree.w - (well.x + well.w) <= 8.5,
+            "the field runs to the row's end: {well:?} in {tree:?}"
+        );
+        assert_eq!(
+            rect_of(&frame, "/b/row").h,
+            HEIGHT_COMPACT,
+            "the row keeps its pitch"
+        );
+        let message = rect_of(&frame, "/b/row/name/body/message");
+        assert!(
+            (message.y - (well.y + well.h)).abs() < 0.5,
+            "the message hangs under the well: {message:?} under {well:?}"
+        );
+        assert_eq!(message.x, well.x);
+        assert!(message.w >= well.w - 0.5, "at least as broad as the well");
+    }
+
     #[test]
     fn a_compact_row_takes_the_workbench_metrics() {
         let place = |level| TreePlace {
