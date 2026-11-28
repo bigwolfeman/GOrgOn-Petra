@@ -1277,6 +1277,22 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         _ => (None, false),
     };
     let (selection, insertion) = field_cursor(node, text.as_deref(), own);
+    // A plain field is one clipped line: the rule `leaf::measure` applies,
+    // so the painter draws the line the walk measured. `TextWrap`'s default
+    // is Wrap, and painting a field with it wrapped a long query under its
+    // own well while the well kept one line's height.
+    let (wrap, max_lines) = match node.kind {
+        NodeKind::Input => {
+            let wrap = props.wrap.unwrap_or(TextWrap::Clip);
+            let max_lines = match props.max_lines {
+                Some(n) => Some(n),
+                None if wrap == TextWrap::Wrap => None,
+                None => Some(1),
+            };
+            (wrap, max_lines)
+        }
+        _ => (props.wrap.unwrap_or_default(), props.max_lines),
+    };
     PaintContent {
         text: text.map(|text| TextPaint {
             text,
@@ -1284,8 +1300,8 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
             // The walk writes the scale in force (`place_node`); a node
             // read on its own is at the theme's size.
             scale: Scale::ONE,
-            wrap: props.wrap.unwrap_or_default(),
-            max_lines: props.max_lines,
+            wrap,
+            max_lines,
             runs: if own {
                 props
                     .runs
@@ -1786,6 +1802,36 @@ mod tests {
             ..Props::default()
         });
         assert_eq!(super::paint_content_of(&filled).text.unwrap().text, "fiber");
+    }
+
+    /// A plain field paints the one clipped line it measured; a textarea's
+    /// declared wrap passes through. A long search query once wrapped under
+    /// its own well, which kept one line's height.
+    #[test]
+    fn a_plain_field_paints_one_clipped_line_and_a_textarea_wraps() {
+        use crate::tree::{Props, TextWrap};
+        let field = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            text: Some("OPEN_LOCATION_COMMAND\\b and a long tail".into()),
+            ..Props::default()
+        });
+        let painted = super::paint_content_of(&field).text.unwrap();
+        assert_eq!((painted.wrap, painted.max_lines), (TextWrap::Clip, Some(1)));
+        let area = ViewNode::new(NodeKind::Input, "a").with_props(Props {
+            text: Some("one\ntwo".into()),
+            wrap: Some(TextWrap::Wrap),
+            ..Props::default()
+        });
+        let painted = super::paint_content_of(&area).text.unwrap();
+        assert_eq!((painted.wrap, painted.max_lines), (TextWrap::Wrap, None));
+        let words = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            text: Some("prose".into()),
+            ..Props::default()
+        });
+        assert_eq!(
+            super::paint_content_of(&words).text.unwrap().wrap,
+            TextWrap::default(),
+            "text keeps its own default"
+        );
     }
 
     /// Token references reach the renderer through the payload, not through
