@@ -17,6 +17,8 @@ use super::motion::{self, cells_to};
 use super::selection::{Selection, Selections};
 use super::transaction::{Assoc, Change, EditRecord, Transaction};
 
+mod lines;
+
 /// The editor's settings (spec 006 FR-026).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditorConfig {
@@ -26,6 +28,12 @@ pub struct EditorConfig {
     pub insert_spaces: bool,
     /// Typing within this many milliseconds merges into one undo group.
     pub undo_merge_ms: u64,
+    /// Brackets and quotes close themselves, and typing the closer steps
+    /// over it (`editor.auto_close_brackets`).
+    pub auto_close: bool,
+    /// The language's line comment (`//`, `#`, `--`), set by the host from
+    /// the file's grammar. [`None`] makes Ctrl+/ do nothing.
+    pub line_comment: Option<&'static str>,
 }
 
 impl Default for EditorConfig {
@@ -34,6 +42,8 @@ impl Default for EditorConfig {
             tab_size: 4,
             insert_spaces: true,
             undo_merge_ms: 1000,
+            auto_close: true,
+            line_comment: None,
         }
     }
 }
@@ -77,6 +87,10 @@ pub struct EditorState {
     /// The last copy or cut, and whether it was whole lines; a paste of the
     /// same text with empty selections goes in above the caret line.
     last_copy: Option<(String, bool)>,
+    /// Where closers typed by auto-close sit, mapped through every edit:
+    /// typing that closer there steps over it, and Backspace between the
+    /// pair deletes both. Cleared when a caret moves on its own.
+    auto_closed: Vec<usize>,
 }
 
 impl Default for EditorState {
@@ -98,6 +112,7 @@ impl EditorState {
             version: 0,
             records: Vec::new(),
             last_copy: None,
+            auto_closed: Vec::new(),
         }
     }
 
@@ -201,6 +216,20 @@ impl EditorState {
 
     /// Apply `command` at time `now_ms` (for undo grouping).
     pub fn apply(&mut self, command: EditCommand, now_ms: u64) -> Outcome {
+        // A caret moved on its own leaves the auto-closed pairs behind.
+        if matches!(
+            command,
+            EditCommand::Move { .. }
+                | EditCommand::SelectAll
+                | EditCommand::SingleSelection
+                | EditCommand::PlaceCaret { .. }
+                | EditCommand::SelectWord { .. }
+                | EditCommand::SelectLine { .. }
+                | EditCommand::DragTo { .. }
+                | EditCommand::Select { .. }
+        ) {
+            self.forget_auto_closed();
+        }
         match command {
             EditCommand::Move { motion, extend } => self.move_carets(motion, extend),
             EditCommand::SelectAll => {
@@ -219,8 +248,19 @@ impl EditorState {
             EditCommand::DeleteWordRight => self.delete_by(motion::word_right, now_ms),
             EditCommand::Indent => self.indent(now_ms),
             EditCommand::Outdent => self.outdent(now_ms),
-            EditCommand::Undo => self.undo(),
-            EditCommand::Redo => self.redo(),
+            EditCommand::IndentLines => self.indent_lines(now_ms),
+            EditCommand::MoveLines { down } => self.move_lines(down, now_ms),
+            EditCommand::CopyLines { down } => self.copy_lines(down, now_ms),
+            EditCommand::DeleteLines => self.delete_lines(now_ms),
+            EditCommand::ToggleLineComment => self.toggle_line_comment(now_ms),
+            EditCommand::Undo => {
+                self.forget_auto_closed();
+                self.undo()
+            }
+            EditCommand::Redo => {
+                self.forget_auto_closed();
+                self.redo()
+            }
             EditCommand::Copy => Outcome {
                 clipboard: Some(self.copy_text()),
                 ..Outcome::default()
@@ -366,6 +406,7 @@ impl EditorState {
         let primary = before.primary_index();
         let transaction = Transaction::new(changes.clone());
         let inverse = transaction.apply(&mut self.buffer, &mut self.records);
+        self.map_auto_closed(&transaction);
         // New carets: each change's start shifted by the deltas before it.
         let mut delta: isize = 0;
         let mut next_change = changes.iter();
@@ -418,6 +459,7 @@ impl EditorState {
         }
         let before = self.selections.clone();
         let inverse = transaction.apply(&mut self.buffer, &mut self.records);
+        self.map_auto_closed(&transaction);
         self.selections.map(|s| {
             let r = s.range();
             let (start, end) = (
@@ -456,6 +498,9 @@ impl EditorState {
     fn insert(&mut self, text: &str, now_ms: u64) -> Outcome {
         if text.is_empty() {
             return Outcome::default();
+        }
+        if let Some(outcome) = self.auto_close(text, now_ms) {
+            return outcome;
         }
         // Typing a word after a space starts a new undo group (FR-014).
         let starts_word = !text.starts_with(char::is_whitespace);
@@ -536,6 +581,9 @@ impl EditorState {
     }
 
     fn delete_back(&mut self, now_ms: u64) -> Outcome {
+        if let Some(outcome) = self.delete_auto_pair(now_ms) {
+            return outcome;
+        }
         let any_selected = self.selections.iter().any(|s| !s.is_empty());
         let kind = if any_selected {
             EditKind::Other

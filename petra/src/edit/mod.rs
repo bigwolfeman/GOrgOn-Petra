@@ -25,6 +25,7 @@
 pub mod buffer;
 pub mod command;
 mod fenwick;
+pub mod find;
 pub mod history;
 pub mod keymap;
 pub mod motion;
@@ -34,6 +35,7 @@ pub mod transaction;
 
 pub use buffer::TextBuffer;
 pub use command::{EditCommand, Motion};
+pub use find::{FindOptions, Finder};
 pub use history::{EditKind, History};
 pub use keymap::{KeyAction, Keymap};
 pub use selection::{Selection, Selections};

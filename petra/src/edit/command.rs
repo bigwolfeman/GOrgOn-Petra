@@ -64,6 +64,26 @@ pub enum EditCommand {
     Indent,
     /// Shift+Tab: outdent the selected lines.
     Outdent,
+    /// Indent every line the selections touch, with or without a selection
+    /// (Ctrl+]).
+    IndentLines,
+    /// Move the selected lines one line down (`true`) or up (Alt+Down,
+    /// Alt+Up).
+    MoveLines {
+        /// Down, or up.
+        down: bool,
+    },
+    /// Copy the selected lines below (`true`, the selection follows the
+    /// copy) or above (Shift+Alt+Down, Shift+Alt+Up).
+    CopyLines {
+        /// Below, or above.
+        down: bool,
+    },
+    /// Delete the selected lines (Ctrl+Shift+K).
+    DeleteLines,
+    /// Comment the selected lines out with the language's line comment, or
+    /// uncomment them when every non-blank one is commented (Ctrl+/).
+    ToggleLineComment,
     /// Undo one group.
     Undo,
     /// Redo one group.

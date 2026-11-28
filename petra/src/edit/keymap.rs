@@ -77,6 +77,16 @@ const CTRL_SHIFT: Mods = Mods {
     ctrl: true,
     alt: false,
 };
+const ALT: Mods = Mods {
+    shift: false,
+    ctrl: false,
+    alt: true,
+};
+const SHIFT_ALT: Mods = Mods {
+    shift: true,
+    ctrl: false,
+    alt: true,
+};
 
 impl Keymap {
     /// The VS Code profile.
@@ -133,6 +143,22 @@ impl Keymap {
             (KeyCode::Char('z'), CTRL, EditCommand::Undo),
             (KeyCode::Char('z'), CTRL_SHIFT, EditCommand::Redo),
             (KeyCode::Char('y'), CTRL, EditCommand::Redo),
+            (KeyCode::Up, ALT, EditCommand::MoveLines { down: false }),
+            (KeyCode::Down, ALT, EditCommand::MoveLines { down: true }),
+            (
+                KeyCode::Up,
+                SHIFT_ALT,
+                EditCommand::CopyLines { down: false },
+            ),
+            (
+                KeyCode::Down,
+                SHIFT_ALT,
+                EditCommand::CopyLines { down: true },
+            ),
+            (KeyCode::Char('k'), CTRL_SHIFT, EditCommand::DeleteLines),
+            (KeyCode::Char('/'), CTRL, EditCommand::ToggleLineComment),
+            (KeyCode::Char(']'), CTRL, EditCommand::IndentLines),
+            (KeyCode::Char('['), CTRL, EditCommand::Outdent),
         ];
         for (key, mods, command) in edits {
             map.bind(key, mods, KeyAction::Edit(command));
