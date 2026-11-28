@@ -170,4 +170,50 @@ mod tests {
         assert_eq!(row_h(&md), Some(40.0));
         assert_eq!(content.children.len(), 2);
     }
+
+    /// A divider splits the rows without widening the menu: the menu hugs
+    /// its widest row with or without one, the divider spans that width,
+    /// and its strip wears the menu's own fill so no gap of another colour
+    /// shows around the rule.
+    #[test]
+    fn a_divider_neither_widens_the_menu_nor_shows_a_gap() {
+        use crate::component::menu::menu_item_divider;
+        use crate::component::tests::petrify_lone_at;
+        use crate::geom::Size;
+        let build = |divided: bool| {
+            let mut rows = vec![super::super::menu::menu_item("a", "Open")];
+            if divided {
+                rows.push(menu_item_divider("div"));
+            }
+            rows.push(super::super::menu::menu_item("b", "Close"));
+            context_menu_xs("m", "Menu", 10.0, 10.0, rows)
+        };
+        let width = |divided: bool| {
+            let frame = petrify_lone_at(build(divided), Size::new(900.0, 600.0));
+            let rect = |suffix: &str| {
+                frame
+                    .placements
+                    .iter()
+                    .find(|p| p.id.ends_with(suffix))
+                    .unwrap_or_else(|| panic!("{suffix} is placed"))
+                    .rect
+            };
+            let menu = rect("/m");
+            if divided {
+                let div = rect("/div");
+                assert!((div.w - menu.w).abs() < 0.5, "{div:?} spans {menu:?}");
+            }
+            menu.w
+        };
+        let (plain, divided) = (width(false), width(true));
+        assert!(
+            (plain - divided).abs() < 0.5,
+            "a divider widened the menu from {plain} to {divided}"
+        );
+        let div = menu_item_divider("div");
+        assert_eq!(
+            div.props.tokens.get("background").map(|t| t.as_str()),
+            Some(crate::component::tokens::SURFACE_RAISED)
+        );
+    }
 }

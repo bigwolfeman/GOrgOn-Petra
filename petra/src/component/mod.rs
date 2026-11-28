@@ -114,6 +114,7 @@ mod field;
 mod file_uploader;
 mod form;
 mod icon;
+mod inline_field;
 mod inline_loading;
 mod input_group;
 mod link;
@@ -133,6 +134,7 @@ mod pagination_nav;
 mod popover;
 mod progress;
 mod progress_indicator;
+mod quick_pick;
 mod rating;
 mod readonly;
 mod search;
@@ -240,6 +242,7 @@ pub use file_uploader::{
 };
 pub use form::{form, form_fluid, form_two_column};
 pub use icon::{BADGE_BOX, IconBox, IconMark, IconTone, icon, icon_in, icon_toned, letter_badge};
+pub use inline_field::{FieldState, INLINE_FIELD_HEIGHT, field_inline};
 pub use inline_loading::{
     inline_loading, inline_loading_error, inline_loading_finished, inline_loading_in_button,
 };
@@ -254,8 +257,9 @@ pub use list::{
 pub use list_row::{LIST_ROW_EXTENT, list_row, list_row_with};
 pub use loading::{advance_ambient_spinners, loading, loading_sm, loading_stop, spinner_phase};
 pub use menu::{
-    menu, menu_border, menu_flyout, menu_item, menu_item_group, menu_item_radio_group,
-    menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu, menu_with_icons, menu_xs,
+    menu, menu_border, menu_flyout, menu_item, menu_item_divider, menu_item_group,
+    menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu,
+    menu_with_icons, menu_xs,
 };
 pub use menu_button::{
     combo_button, combo_button_lg, combo_button_sm, menu_button, menu_button_ghost, menu_button_lg,
@@ -294,6 +298,9 @@ pub use popover::{
 pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{
     progress_indicator, progress_indicator_interactive, progress_step, progress_step_interactive,
+};
+pub use quick_pick::{
+    QUICK_PICK_FIELD_HEIGHT, QUICK_PICK_ROW_HEIGHT, QUICK_PICK_WIDTH, QuickPickItem, quick_pick,
 };
 pub use rating::rating;
 pub use readonly::readonly;

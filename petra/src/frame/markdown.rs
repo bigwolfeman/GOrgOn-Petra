@@ -36,7 +36,14 @@ use crate::tree::Role;
 /// front of half a word claims a list item that the operator did not select.
 /// The indent is not conditional the same way: a partial line is still at its
 /// own depth.
+///
+/// A text input's selection is part of its own value, not a line of the
+/// page, so it takes no lead: a name selected in a field that sits in a tree
+/// row copies as the name, not as an indented list item.
 pub(super) fn line_lead(frame: &PetrifiedFrame, index: usize, from_the_top: bool) -> String {
+    if frame.placements[index].semantics.role == Some(Role::TextInput) {
+        return String::new();
+    }
     let mut lead = indent(frame, index);
     if from_the_top && let Some(mark) = mark_before(frame, index) {
         lead.push_str(mark);

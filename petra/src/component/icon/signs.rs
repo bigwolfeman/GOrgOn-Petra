@@ -44,7 +44,14 @@ fn polyline(points: &[Point], s: f32, color: ColorRef) -> Command {
 }
 
 /// An open stroked arc about `center`, from `start` through `sweep` degrees.
-fn arc(center: Point, radius: f32, start: f32, sweep: f32, s: f32, color: ColorRef) -> Command {
+pub(super) fn arc(
+    center: Point,
+    radius: f32,
+    start: f32,
+    sweep: f32,
+    s: f32,
+    color: ColorRef,
+) -> Command {
     Command::Path {
         verbs: arc_verbs(
             scaled(center, s),

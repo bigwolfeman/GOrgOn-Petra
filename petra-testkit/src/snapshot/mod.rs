@@ -1171,7 +1171,7 @@ mod tests {
     /// The marks [`Sheet`] lays out: the version-control glyphs and the
     /// marks they sit beside in a row, then the file-tree marks, so a reader
     /// compares them at 1x.
-    const SHEET_MARKS: [gorgon_petra::component::IconMark; 48] = {
+    const SHEET_MARKS: [gorgon_petra::component::IconMark; 56] = {
         use gorgon_petra::component::IconMark as M;
         [
             M::Circle,
@@ -1222,11 +1222,23 @@ mod tests {
             M::BranchBoxed,
             M::Unknown,
             M::DocumentInvalid,
+            M::DocumentAdd,
+            M::FolderAdd,
+            M::FolderMoveTo,
+            M::TrashCan,
+            M::Undo,
+            M::CollapseAll,
+            M::Edit,
+            M::Copy,
         ]
     };
 
-    /// Eight marks to a row, 16 units each with an 8-unit gap, on
-    /// `surface.base`.
+    /// Marks to a row on the sheet: ten 16-unit marks and their gaps fill the
+    /// 200-unit test window, and six rows fill its 120.
+    const SHEET_PER_ROW: usize = 10;
+
+    /// [`SHEET_PER_ROW`] marks to a row, 16 units each with a `spacing.xs`
+    /// gap, on `surface.base`.
     struct Sheet;
 
     impl RowSource for Sheet {
@@ -1246,20 +1258,23 @@ mod tests {
                 TokenName::new("surface.base").expect("a shipped token name"),
             );
             root.spacing.clone_from(&gap);
-            let rows = SHEET_MARKS.chunks(8).enumerate().map(|(r, marks)| {
-                let row = ViewNode::new(NodeKind::Stack, format!("row{r}")).with_props(Props {
-                    axis: Some(Axis::Horizontal),
-                    spacing: gap.clone(),
-                    ..Props::default()
+            let rows = SHEET_MARKS
+                .chunks(SHEET_PER_ROW)
+                .enumerate()
+                .map(|(r, marks)| {
+                    let row = ViewNode::new(NodeKind::Stack, format!("row{r}")).with_props(Props {
+                        axis: Some(Axis::Horizontal),
+                        spacing: gap.clone(),
+                        ..Props::default()
+                    });
+                    marks.iter().enumerate().fold(row, |row, (c, mark)| {
+                        row.child(icon_toned(
+                            format!("m{}", r * SHEET_PER_ROW + c),
+                            *mark,
+                            IconTone::Primary,
+                        ))
+                    })
                 });
-                marks.iter().enumerate().fold(row, |row, (c, mark)| {
-                    row.child(icon_toned(
-                        format!("m{}", r * 8 + c),
-                        *mark,
-                        IconTone::Primary,
-                    ))
-                })
-            });
             rows.fold(
                 ViewNode::new(NodeKind::Stack, "root").with_props(root),
                 ViewNode::child,

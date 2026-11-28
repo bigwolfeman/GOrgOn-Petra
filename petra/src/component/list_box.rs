@@ -405,6 +405,11 @@ fn menu_row_chrome(mut node: ViewNode, label: String) -> ViewNode {
         .interactive(Role::Button, label, FIELD_INTENTS)
         .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside)
+        // A row opened or picked with the pointer is already marked by the
+        // hover fill under it; a focus bar on the first row of a menu the
+        // pointer just opened reads as a second, unrelated selection. The
+        // bar shows once a key moves focus, as `:focus-visible` does.
+        .with_focus_quiet_on_press()
 }
 
 /// One or many children as a hugging run. A single child is returned as

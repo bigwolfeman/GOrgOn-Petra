@@ -175,3 +175,26 @@ fn a_silent_picture_leads_nothing() {
 
     assert_eq!(copied(&tree), "Beta");
 }
+
+/// A field's selection is its own value. A rename field in a nested tree row
+/// once copied as `  notes` because the list indent of its row led it.
+#[test]
+fn a_field_selection_copies_without_the_list_indent() {
+    use crate::component::TreeItem;
+    use crate::component::{FieldState, field_inline, tree_view};
+    use crate::tree::TextCursor;
+    let field = field_inline(
+        "name",
+        "Rename notes.txt",
+        "notes.txt",
+        TextCursor::spanning(0..5),
+        &FieldState::Valid,
+    );
+    let row = TreeItem::new("row", "notes.txt")
+        .editing(field)
+        .build(Vec::new());
+    let inner = tree_view("inner", vec![row]);
+    let outer = unordered_list("outer", vec![list_item_with("item", "x", Some(inner))]);
+    let frame = place(&outer, None);
+    assert_eq!(frame.selected_text().as_deref(), Some("notes"));
+}
