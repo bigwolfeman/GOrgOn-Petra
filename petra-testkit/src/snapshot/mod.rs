@@ -1171,7 +1171,7 @@ mod tests {
     /// The marks [`Sheet`] lays out: the version-control glyphs and the
     /// marks they sit beside in a row, then the file-tree marks, so a reader
     /// compares them at 1x.
-    const SHEET_MARKS: [gorgon_petra::component::IconMark; 56] = {
+    const SHEET_MARKS: [gorgon_petra::component::IconMark; 59] = {
         use gorgon_petra::component::IconMark as M;
         [
             M::Circle,
@@ -1228,6 +1228,9 @@ mod tests {
             M::TrashCan,
             M::Undo,
             M::CollapseAll,
+            M::Replace,
+            M::ReplaceAll,
+            M::Stop,
             M::Edit,
             M::Copy,
         ]

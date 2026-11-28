@@ -1118,6 +1118,16 @@ pub struct Props {
     /// Maximum rendered lines before truncation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_lines: Option<usize>,
+    /// For one line of `text`: the bytes that must stay in view, as an
+    /// editor's search result keeps its match in view. When the line is
+    /// wider than its box, the start is dropped at a word boundary and
+    /// drawn as one `…`, as little as the box needs; what is still too wide
+    /// past the range ellipsizes at the end under [`TextWrap::Ellipsis`].
+    /// Measured at placement against the box the text was given, so it
+    /// follows a resized sidebar and the real glyph widths. The node's text
+    /// and its semantics keep the whole line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_in_view: Option<std::ops::Range<usize>>,
     /// Typography token reference, or `None` for the theme's body style.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub style: Option<TokenName>,

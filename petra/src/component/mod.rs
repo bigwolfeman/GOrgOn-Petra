@@ -283,7 +283,8 @@ pub use number_input::{
     number_input_readonly, number_input_sm, number_input_warning,
 };
 pub use option_toggle::{
-    FieldOption, OPTION_FIELD_HEIGHT, OPTION_TOGGLE_SIZE, field_with_options, option_toggle,
+    FieldOption, OPTION_FIELD_HEIGHT, OPTION_TOGGLE_SIZE, field_icon_button, field_with_options,
+    field_with_trailing, option_toggle,
 };
 pub use otp::otp;
 pub use pagination::{

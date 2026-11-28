@@ -735,7 +735,9 @@ pub fn marked_rect(placements: &[Placement], shown: usize, figure: FocusFigure) 
     if let Some(first) = node.semantics.fragments.first() {
         return first.translate(node.rect.x, node.rect.y);
     }
-    if !figure.marks_the_label() {
+    // A node that shows the bar and declares the run itself spans its own
+    // rect: a field well whose text and trailing toggles are one control.
+    if !figure.marks_the_label() || node.semantics.focus_run {
         return node.rect;
     }
     let run = declared_run(placements, shown).or_else(|| content_run(placements, shown));
@@ -1023,6 +1025,25 @@ mod tests {
             row(false).x,
             296.0,
             "and it starts at the box, not at the word"
+        );
+    }
+
+    /// A well that declares the run on itself is marked across its whole
+    /// rect, past its own short content: a find field's bar runs under the
+    /// text and the option toggles both. Falsify by dropping the
+    /// `focus_run` test at the top of `marked_rect`.
+    #[test]
+    fn a_node_that_declares_its_own_run_is_marked_across_its_rect() {
+        let mut places = wide_row();
+        let short = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert!(
+            short.w < places[0].rect.w,
+            "the fixture's content is short: {short:?}"
+        );
+        places[0].semantics.focus_run = true;
+        assert_eq!(
+            marked_rect(&places, 0, FocusFigure::BarInside),
+            places[0].rect
         );
     }
 

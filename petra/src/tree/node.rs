@@ -701,6 +701,12 @@ pub enum FocusFigure {
     /// hangs *over*; this one hangs over nothing, because it sits inside the
     /// fill it marks.
     BarInside,
+    /// No figure: the control's own state outline already marks it, and a
+    /// focus bar inside a refused field's error box draws two boundaries in
+    /// two hues, which reads as neither. A refused field well declares it
+    /// for as long as it is refused; the text caret still shows where the
+    /// focus is. Nothing else should.
+    Quiet,
 }
 
 impl FocusFigure {
@@ -868,7 +874,9 @@ pub struct Semantics {
     #[serde(skip_serializing_if = "FocusShownOn::is_default")]
     pub focus_shown_on: FocusShownOn,
     /// When an ancestor draws a bar figure, the bar spans **this** node
-    /// rather than the ancestor's own content.
+    /// rather than the ancestor's own content. On the node that draws the
+    /// bar, the bar spans that node's whole rect: a field well whose text
+    /// and trailing toggles are one control.
     ///
     /// A third, separate question from the other two: [`FocusFigure`] says
     /// what shape, [`FocusShownOn`] says on whose rect, and this says how

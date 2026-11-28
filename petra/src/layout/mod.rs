@@ -1208,6 +1208,12 @@ fn place_node(
         // painter shapes from it and the digest hashes it.
         if let Some(text) = content.text.as_mut() {
             text.scale = slot.text_scale;
+            // `keep_in_view` is answered against the box this walk just
+            // gave the text, so it reads the placement, not the tree.
+            if let Some(keep) = node.props.keep_in_view.clone() {
+                let width = sink.placed()[index].rect.w;
+                keep_in_view(text, keep, width, ctx.content);
+            }
         }
         // The resolved side of an anchored surface is not knowable to an
         // author and not derivable from the tree — only the ladder that just
@@ -1232,6 +1238,142 @@ fn place_node(
         sink.note_slot(index, slot);
     }
     path.pop();
+}
+
+/// What a word may start after besides whitespace, for
+/// [`Props::keep_in_view`]'s cut: the brackets and quotes that open one.
+const OPENERS: &str = "([{<\"'`";
+
+/// The one glyph a dropped start draws ([`Props::keep_in_view`]).
+const HEAD_ELLIPSIS: &str = "…";
+
+/// Drop the start of one line of `text` so the bytes `keep` show in
+/// `width` ([`Props::keep_in_view`]).
+///
+/// Nothing changes when the line ends `keep` inside the box, with room for
+/// the end's `…` when more follows under [`TextWrap::Ellipsis`]. Otherwise
+/// the cut is the earliest word start at or before `keep.start` from which
+/// `…` plus the line up to `keep.end` (and that end `…`) fits; with no such start the cut is
+/// `keep.start`. A word start is a byte after whitespace or after an
+/// opening bracket or quote ([`OPENERS`]). Positions come from the measurer's own
+/// shaping (`ContentMeasure::fragments`), so the cut follows the real glyph
+/// widths at the scale in force. The runs move with the text, and the `…`
+/// takes the ink of the run it replaces, with no underline, strike or band.
+fn keep_in_view(
+    text: &mut TextPaint,
+    keep: std::ops::Range<usize>,
+    width: f32,
+    measure: &mut dyn ContentMeasure,
+) {
+    let line = text.text.as_str();
+    let end = keep.end.min(line.len());
+    let start = keep.start.min(end);
+    if !line.is_char_boundary(start) || !line.is_char_boundary(end) || start == 0 {
+        return;
+    }
+    let ellipsis = measure
+        .text(&TextRequest {
+            text: HEAD_ELLIPSIS,
+            style: text.style.as_deref(),
+            wrap: TextWrap::Clip,
+            max_lines: Some(1),
+            available_width: None,
+            runs: TextRuns::Plain,
+            text_scale: text.scale,
+        })
+        .size
+        .w;
+    let request = TextRequest {
+        text: line,
+        style: text.style.as_deref(),
+        wrap: TextWrap::Clip,
+        max_lines: Some(1),
+        available_width: None,
+        runs: TextRuns::Frame(&text.runs),
+        text_scale: text.scale,
+    };
+    let mut x_of = |byte: usize| -> f32 {
+        if byte == 0 {
+            return 0.0;
+        }
+        measure
+            .fragments(&request, 0..byte)
+            .iter()
+            .map(|r| r.right())
+            .fold(0.0, f32::max)
+    };
+    // A line that fits whole draws no `…` at either end. Checked first, as
+    // a box that hugs its text is exactly the line's width, and the end
+    // `…` below is wider than a short tail it would never replace.
+    if x_of(line.len()) <= width {
+        return;
+    }
+    // What follows the range ellipsizes at the end, and that `…` needs its
+    // own room after the range, or it eats the range's last glyphs.
+    let tail = if end < line.len() && text.wrap == TextWrap::Ellipsis {
+        ellipsis
+    } else {
+        0.0
+    };
+    let reach = x_of(end) + tail;
+    if reach <= width {
+        return;
+    }
+    // Word starts up to the range: after whitespace or an opening bracket
+    // or quote, never on whitespace. Not after `.`, `:` or `-`, which join
+    // a path, a file name or a word a reader takes as one.
+    let starts: Vec<usize> = line
+        .char_indices()
+        .take_while(|&(i, _)| i <= start)
+        .map(|(i, _)| i)
+        .filter(|&i| {
+            i > 0
+                && line[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_whitespace() || OPENERS.contains(c))
+                && !line[i..].starts_with(char::is_whitespace)
+        })
+        .collect();
+    // The earliest start whose remainder fits: the starts are in order and
+    // their x only grows, so a binary search finds it.
+    let need = reach + ellipsis - width;
+    let (mut lo, mut hi) = (0usize, starts.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if x_of(starts[mid]) >= need {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    let cut = starts.get(lo).copied().unwrap_or(start);
+    let shown = format!("{HEAD_ELLIPSIS}{}", &line[cut..]);
+    let mut runs = Vec::with_capacity(text.runs.len() + 1);
+    if !text.runs.is_empty() {
+        let mut at = 0usize;
+        for run in &text.runs {
+            let run_end = at + run.len;
+            if run_end > cut {
+                if runs.is_empty() {
+                    runs.push(TextRunPaint {
+                        len: HEAD_ELLIPSIS.len(),
+                        underline: false,
+                        strike: false,
+                        background: None,
+                        ..run.clone()
+                    });
+                }
+                let len = run_end - at.max(cut);
+                if len > 0 {
+                    runs.push(TextRunPaint { len, ..run.clone() });
+                }
+            }
+            at = run_end;
+        }
+    }
+    text.text = shown;
+    text.runs = runs;
 }
 
 /// What this node draws, beyond its rect.
@@ -1859,6 +2001,100 @@ mod tests {
             TextWrap::default(),
             "text keeps its own default"
         );
+    }
+
+    /// `keep_in_view` drops the start at a word boundary, as little as the
+    /// box needs, so the kept bytes show after one `…`; a line that already
+    /// shows them is left alone, and the runs move with the text.
+    #[test]
+    fn keep_in_view_drops_the_start_at_a_word_so_the_range_shows() {
+        use crate::frame::{TransitionActivity, Viewport, petrify};
+        use crate::geom::Size;
+        use crate::testing::{Harness, validated};
+        use crate::token::ThemeMode;
+        use crate::tree::{Props, TextRun, TextWrap};
+        let shown_in = |line: &str, width: f32| {
+            let at = line.find("needle").unwrap();
+            let tree = ViewNode::new(NodeKind::Stack, "root").child(
+                ViewNode::new(NodeKind::Text, "t")
+                    .with_props(Props {
+                        text: Some(line.into()),
+                        wrap: Some(TextWrap::Ellipsis),
+                        keep_in_view: Some(at..at + 6),
+                        runs: vec![
+                            TextRun {
+                                len: at,
+                                ..TextRun::default()
+                            },
+                            TextRun {
+                                len: 6,
+                                underline: true,
+                                ..TextRun::default()
+                            },
+                            TextRun {
+                                len: line.len() - at - 6,
+                                ..TextRun::default()
+                            },
+                        ],
+                        ..Props::default()
+                    })
+                    .with_constraints(crate::tree::Constraints {
+                        horizontal: crate::tree::AxisConstraint {
+                            min: Some(width),
+                            max: Some(width),
+                            priority: 0,
+                        },
+                        ..crate::tree::Constraints::default()
+                    }),
+            );
+            let mut h = Harness::new();
+            let frame = petrify(
+                1,
+                validated(&tree),
+                &mut h.ctx(),
+                Viewport::new(Size::new(400.0, 100.0), ThemeMode::Dark),
+                TransitionActivity::default(),
+            );
+            let text = frame
+                .drawn()
+                .find(|(p, _)| p.id.ends_with("/t"))
+                .and_then(|(_, c)| c.text.clone())
+                .expect("the text paints");
+            (
+                text.text,
+                text.runs
+                    .iter()
+                    .map(|r| (r.len, r.underline))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let line = "alpha beta gamma delta needle tail";
+        let (wide, _) = shown_in(line, 1000.0);
+        assert_eq!(wide, line, "a line that shows its range is left alone");
+        let char_w = Harness::new().content.char_w;
+        // A box exactly the line's width: the tail after the range is
+        // narrower than an end `…` would be, and none is drawn.
+        let (exact, _) = shown_in(line, line.chars().count() as f32 * char_w);
+        assert_eq!(exact, line, "a line that fits whole is left alone");
+        // Room for 20 characters: `…` plus "delta needle" is 13, plus
+        // "gamma " is 19, plus "beta " would be 24.
+        let (narrow, runs) = shown_in(line, 20.0 * char_w);
+        assert_eq!(narrow, "…gamma delta needle tail");
+        assert_eq!(
+            runs.first(),
+            Some(&("…".len(), false)),
+            "the … takes no underline"
+        );
+        assert_eq!(
+            runs.iter().map(|r| r.0).sum::<usize>(),
+            narrow.len(),
+            "the runs still tile the shown text"
+        );
+        assert!(runs.contains(&(6, true)), "the kept run keeps its mark");
+        // A dot joins a file name: the cut skips to the next word rather
+        // than leaving "…rs".
+        let (named, _) = shown_in("open foo.rs then needle", 16.0 * char_w);
+        assert_eq!(named, "…then needle");
     }
 
     /// Token references reach the renderer through the payload, not through

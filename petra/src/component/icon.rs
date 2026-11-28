@@ -664,6 +664,13 @@ pub enum IconMark {
     /// Carbon `collapse-all`: a box with two receding corner brackets behind
     /// it.
     CollapseAll,
+    /// An editor's replace: an outlined box, a bent arrow, a filled box.
+    Replace,
+    /// An editor's replace all: an outlined box, a bent arrow, two filled
+    /// boxes.
+    ReplaceAll,
+    /// Carbon `stop--filled-alt`: one filled square.
+    Stop,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -941,6 +948,9 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::TrashCan => actions::trash_can(size / 32.0, color),
         IconMark::Undo => actions::undo(size / 32.0, color),
         IconMark::CollapseAll => actions::collapse_all(size / 32.0, color),
+        IconMark::Replace => actions::replace(size / 32.0, color),
+        IconMark::ReplaceAll => actions::replace_all(size / 32.0, color),
+        IconMark::Stop => actions::stop(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -1914,7 +1924,7 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 83] = [
+    const EVERY_MARK: [IconMark; 86] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CaretDown,
@@ -1998,6 +2008,9 @@ mod tests {
         IconMark::TrashCan,
         IconMark::Undo,
         IconMark::CollapseAll,
+        IconMark::Replace,
+        IconMark::ReplaceAll,
+        IconMark::Stop,
     ];
 
     fn list(node: &crate::tree::ViewNode) -> &DrawList {

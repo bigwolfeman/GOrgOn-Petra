@@ -194,6 +194,12 @@ pub enum IconMarkParam {
     Undo,
     /// `"collapse-all"` on the wire, [`IconMark::CollapseAll`] in the tree.
     CollapseAll,
+    /// `"replace"` on the wire, [`IconMark::Replace`] in the tree.
+    Replace,
+    /// `"replace-all"` on the wire, [`IconMark::ReplaceAll`] in the tree.
+    ReplaceAll,
+    /// `"stop"` on the wire, [`IconMark::Stop`] in the tree.
+    Stop,
 }
 
 impl From<IconMarkParam> for IconMark {
@@ -282,6 +288,9 @@ impl From<IconMarkParam> for IconMark {
             IconMarkParam::TrashCan => IconMark::TrashCan,
             IconMarkParam::Undo => IconMark::Undo,
             IconMarkParam::CollapseAll => IconMark::CollapseAll,
+            IconMarkParam::Replace => IconMark::Replace,
+            IconMarkParam::ReplaceAll => IconMark::ReplaceAll,
+            IconMarkParam::Stop => IconMark::Stop,
         }
     }
 }
@@ -313,6 +322,6 @@ macro_rules! icon_mark_luau {
          \"octagon-cross\" | \"octagon-bar\" | \"folder-cracked\" | \"folder-person\" | \
          \"cloud\" | \"circle-exclamation\" | \"diamond-filled\" | \"disc-on-bar\" | \
          \"document-add\" | \"folder-add\" | \"folder-move-to\" | \"trash-can\" | \"undo\" | \
-         \"collapse-all\""
+         \"collapse-all\" | \"replace\" | \"replace-all\" | \"stop\""
     };
 }

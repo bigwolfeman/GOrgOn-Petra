@@ -1048,6 +1048,7 @@ pub(crate) fn caret_bars(mark: egui::Rect, figure: FocusFigure, scale: Scale) ->
         FocusFigure::BarUnder => vec![egui_from_petra(snapped.bar(pr))],
         FocusFigure::BarInside => vec![egui_from_petra(snapped.bar_inside(pr))],
         FocusFigure::Sides => snapped.sides(pr).into_iter().map(egui_from_petra).collect(),
+        FocusFigure::Quiet => Vec::new(),
     }
 }
 
@@ -1114,6 +1115,9 @@ pub(crate) fn caret_bands(
                 egui_from_petra(left),
             ]
         }
+        // Every band flat on its own edge: nothing paints, and a flight to
+        // or from a quiet well folds into the edges it would grow from.
+        FocusFigure::Quiet => [flat_top, flat_right, flat_bottom, flat_left],
     }
 }
 

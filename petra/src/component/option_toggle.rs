@@ -25,7 +25,7 @@ use super::tokens::{
     ACCENT_PRIMARY, CHROME_HOVER, CHROME_SELECTED, SPACING_01, SPACING_02, SUPPORT_ERROR,
     SUPPORT_WARNING, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
 };
-use super::{pin_block, stack};
+use super::{IconMark, chrome_icon_button, pin_block, stack};
 use crate::geom::{Align, Axis};
 use crate::tree::{
     AxisConstraint, Behaviour, FocusFigure, FocusShownOn, InsetRefs, Intent, Interaction, Justify,
@@ -133,6 +133,33 @@ pub fn option_toggle(option: &FieldOption) -> ViewNode {
     node
 }
 
+/// An icon button the size of an [`option_toggle`]: an action that sits in a
+/// find well's trailing column (an editor's replace all) or at the trailing
+/// edge of a dense results row (replace this file, this match). A
+/// [`chrome_icon_button`] pinned to [`OPTION_TOGGLE_SIZE`] on both axes, so
+/// it lines up under the toggles of the well above it and fits a 22-unit
+/// row without growing it. Like a toggle, it has no fill until the pointer
+/// is on it.
+#[must_use]
+pub fn field_icon_button(
+    key: impl Into<Key>,
+    mark: IconMark,
+    label: impl Into<String>,
+) -> ViewNode {
+    let mut node =
+        chrome_icon_button(key, mark, label).with_constraints(pin_block(OPTION_TOGGLE_SIZE));
+    // No resting fill: it sits on a well's fill or a selected row's band,
+    // and the side bar's own fill there is a dark square. The pointer still
+    // lights its hover fill, as a toggle's.
+    node.props.tokens.remove("background");
+    node.constraints.horizontal = AxisConstraint {
+        min: Some(OPTION_TOGGLE_SIZE),
+        max: Some(OPTION_TOGGLE_SIZE),
+        priority: 0,
+    };
+    node
+}
+
 /// A find well named `label`, holding `value` with `cursor`, with
 /// `options` at its trailing end and, while `state` refuses or warns, its
 /// message under it (glyph and word, `Invalid:` or `Warning:`).
@@ -147,6 +174,27 @@ pub fn field_with_options(
     value: impl Into<String>,
     cursor: Option<TextCursor>,
     options: &[FieldOption],
+    state: &FieldState,
+) -> ViewNode {
+    let trailing = options.iter().map(FieldOption::build).collect();
+    field_with_trailing(key, label, value, cursor, trailing, state)
+}
+
+/// [`field_with_options`] with any controls at the trailing end: option
+/// toggles, an icon button that acts on the value (an editor's replace
+/// all), or both. Two wells built from this are the same width whatever
+/// each carries, so a find well and a replace well stack flush.
+///
+/// Focus shows on the whole well, as one bar along its inner bottom edge
+/// across the text and the controls. While `state` refuses or warns, the
+/// state's box is the only indicator ([`FocusFigure::Quiet`]).
+#[must_use]
+pub fn field_with_trailing(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    cursor: Option<TextCursor>,
+    trailing: Vec<ViewNode>,
     state: &FieldState,
 ) -> ViewNode {
     let label = label.into();
@@ -169,10 +217,9 @@ pub fn field_with_options(
     let mut input = ViewNode::new(NodeKind::Input, "input")
         .with_props(props)
         .interactive(Role::TextInput, label, super::field::EDITABLE_TEXT_INTENTS);
-    input.semantics.focus_figure = FocusFigure::BarInside;
-    input.semantics.focus_run = true;
+    input.semantics.focus_shown_on = FocusShownOn::OnWell;
     let mut parts = vec![input];
-    parts.extend(options.iter().map(FieldOption::build));
+    parts.extend(trailing);
     let mut well = stack("well", Axis::Horizontal, Some(SPACING_01), parts);
     well.props.align = Some(Align::Center);
     well.props.padding = Some(InsetRefs {
@@ -185,6 +232,11 @@ pub fn field_with_options(
         FieldState::Warning(_) => bind_validation_chrome(&mut well.props, SUPPORT_WARNING),
     }
     well.semantics.focus_shown_on = FocusShownOn::Well;
+    well.semantics.focus_run = true;
+    well.semantics.focus_figure = match state {
+        FieldState::Valid => FocusFigure::BarInside,
+        FieldState::Invalid(_) | FieldState::Warning(_) => FocusFigure::Quiet,
+    };
     well.constraints.vertical = AxisConstraint {
         min: Some(OPTION_FIELD_HEIGHT),
         max: Some(OPTION_FIELD_HEIGHT),
@@ -236,6 +288,18 @@ mod tests {
         assert_eq!(glyph(&off).as_deref(), Some(TEXT_MUTED));
     }
 
+    /// The action is a toggle's size on both axes and has no resting fill,
+    /// so it sits on a well or a selected row without a dark square.
+    #[test]
+    fn a_field_icon_button_is_a_toggles_size_with_no_resting_fill() {
+        let node = field_icon_button("all", IconMark::ReplaceAll, "Replace all");
+        assert_eq!(node.constraints.horizontal.max, Some(OPTION_TOGGLE_SIZE));
+        assert_eq!(node.constraints.vertical.max, Some(OPTION_TOGGLE_SIZE));
+        assert!(!node.props.tokens.contains_key("background"));
+        assert!(node.props.tokens.contains_key("background@hover"));
+        assert_eq!(node.semantics.label.as_deref(), Some("Replace all"));
+    }
+
     #[test]
     fn the_whole_word_glyph_is_underlined() {
         let word = FieldOption::new("word", "ab", "Match whole word", false)
@@ -280,5 +344,14 @@ mod tests {
         let valid = field_with_options("query", "Search", "", None, &options, &FieldState::Valid);
         assert_eq!(valid.children.len(), 1, "a legal value has no message");
         assert!(!valid.children[0].props.tokens.contains_key("border"));
+        // Focus shows on the whole well, and a refused well shows only its
+        // state box.
+        let input = &valid.children[0].children[0];
+        assert_eq!(input.semantics.focus_shown_on, FocusShownOn::OnWell);
+        assert_eq!(
+            valid.children[0].semantics.focus_figure,
+            FocusFigure::BarInside
+        );
+        assert_eq!(well.semantics.focus_figure, FocusFigure::Quiet);
     }
 }

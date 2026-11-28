@@ -230,3 +230,65 @@ pub(super) fn collapse_all(s: f32, color: ColorRef) -> Vec<Command> {
         &paint,
     )
 }
+
+/// The outlined source box and the bent arrow the two replace marks
+/// share: a box at the top left, an arrow leaving its right side and
+/// turning down to point at the bottom right.
+fn replace_source(s: f32, paint: &Paint) -> Vec<Command> {
+    let mut out = bars(
+        &[
+            // The source box: top, bottom, left, right.
+            (3.0, 3.0, 15.0, 5.0),
+            (3.0, 13.0, 15.0, 15.0),
+            (3.0, 5.0, 5.0, 13.0),
+            (13.0, 5.0, 15.0, 13.0),
+            // The arrow: out to the right, then down.
+            (15.0, 8.0, 24.0, 10.0),
+            (22.0, 10.0, 24.0, 14.0),
+        ],
+        s,
+        paint,
+    );
+    // The head, pointing down: a trapezoid narrowing to a 1-unit tip at
+    // y = 19, convex as drawn.
+    out.push(filled_quad(
+        [
+            pt(18.5, 14.0),
+            pt(27.5, 14.0),
+            pt(23.5, 19.0),
+            pt(22.5, 19.0),
+        ],
+        s,
+        paint.clone(),
+    ));
+    out
+}
+
+/// `IconMark::Replace`: an editor's replace. The outlined source box at the
+/// top left, a bent arrow, and one filled box at the bottom right: this
+/// becomes that.
+pub(super) fn replace(s: f32, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    let mut out = replace_source(s, &paint);
+    out.extend(bars(&[(16.0, 20.0, 30.0, 30.0)], s, &paint));
+    out
+}
+
+/// `IconMark::ReplaceAll`: an editor's replace all. As
+/// [`replace`], with two filled boxes at the bottom right: every match.
+pub(super) fn replace_all(s: f32, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    let mut out = replace_source(s, &paint);
+    out.extend(bars(
+        &[(13.0, 20.0, 21.0, 30.0), (23.0, 20.0, 31.0, 30.0)],
+        s,
+        &paint,
+    ));
+    out
+}
+
+/// `IconMark::Stop`: Carbon `stop--filled-alt`. One filled square: stop
+/// what is running.
+pub(super) fn stop(s: f32, color: ColorRef) -> Vec<Command> {
+    bars(&[(8.0, 8.0, 24.0, 24.0)], s, &Paint::filled(color))
+}

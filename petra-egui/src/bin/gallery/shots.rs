@@ -5167,7 +5167,8 @@ mod tests {
                             }
                         }
                     }
-                    FocusFigure::Border | FocusFigure::BarUnder => {}
+                    // A quiet well paints nothing, so nothing can escape.
+                    FocusFigure::Border | FocusFigure::BarUnder | FocusFigure::Quiet => {}
                 }
             }
         }
